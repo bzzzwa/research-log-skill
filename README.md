@@ -15,8 +15,9 @@ costs nothing and context is never silently lost to compaction.
   - `SKILL.md` — the skill itself
   - `reference/documents.md` — the methodology documents and their templates
   - `reference/task-records.md` — task record format and the dependency schema
+  - `reference/retrievals.md` — snapshots of search and tool results
   - `reference/project-profile.md` — how to write the per-project layer
-  - `scripts/rlcheck.py` — validation and staleness checks, zero dependencies
+  - `scripts/rlcheck.py` — validation, staleness and derived views, zero dependencies
 
 ## Design
 
@@ -33,25 +34,64 @@ their inputs with digests. When a source set grows or the brief is amended,
 `rlcheck.py stale` names the affected records. The model is never asked to work
 this out by reading.
 
+**Nothing lives only in the conversation.** Results from web search, databases
+and connectors are saved as dated, frozen snapshots with the exact query, at the
+moment they are retrieved, and declared as task inputs. A search that cannot be
+rerun can still be checked.
+
+**The log is append-only; the current view is derived.** Decisions are never
+edited, only superseded by later ones. `rlcheck.py decisions` derives the set
+still in force, so a fresh session reads the rules that apply now without
+reading the whole history.
+
 **The gate is mechanical.** A task is finished when its record validates, not
-when the work feels done. `rlcheck.py validate` exits non-zero on an incomplete
-record and can be wired into a pre-commit hook.
+when the work feels done. `rlcheck.py validate` checks substance as well as
+form: no empty sections or template text in a complete record, every output
+present, every cited decision, limitation and snapshot resolvable, derived files
+up to date. It exits non-zero on any failure and can run as a pre-commit hook.
 
 ## Use
 
-With Claude Code, copy `skills/research-log/` into `~/.claude/skills/` or the
-project's `.claude/skills/`.
+**Claude Code (intended).** Copy `skills/research-log/` into `~/.claude/skills/`
+or into the project's `.claude/skills/`. Start Claude Code in the research
+project's root; the model runs the checks itself.
 
-With Claude.ai, zip the `research-log` folder and upload it under
+**Claude.ai.** Zip the `research-log` folder and upload it under
 Settings → Skills (requires code execution enabled). Keep each research
 project's `PROFILE.md` either on disk, read through the Filesystem connector at
-the start of a session, or as the instructions of a Claude Project.
+the start of a session, or as the instructions of a Claude Project. The
+Filesystem connector cannot execute anything on your machine, so the model will
+ask you to run `rlcheck` and paste the output; keep a terminal open in the
+project.
 
-Run the script locally rather than through the model:
+## Commands
+
+Always run from the research project's root; the script works on the current
+directory, wherever it is installed.
 
 ```
-python skills/research-log/scripts/rlcheck.py status
-python skills/research-log/scripts/rlcheck.py validate
-python skills/research-log/scripts/rlcheck.py stale
-python skills/research-log/scripts/rlcheck.py seal tasks/t0007-eu-screening
+python <skill-dir>/scripts/rlcheck.py status
+python <skill-dir>/scripts/rlcheck.py validate
+python <skill-dir>/scripts/rlcheck.py stale
+python <skill-dir>/scripts/rlcheck.py check
+python <skill-dir>/scripts/rlcheck.py seal tasks/t0007-eu-screening
+python <skill-dir>/scripts/rlcheck.py decisions
+python <skill-dir>/scripts/rlcheck.py retrieval wos-open-science
 ```
+
+`<skill-dir>` is wherever `research-log/` lives: `~/.claude/skills/research-log`,
+`.claude/skills/research-log`, or `skills/research-log` in a clone of this
+repository.
+
+## Pre-commit hook
+
+If the research project is a git repository with its root at the project root,
+`.git/hooks/pre-commit`:
+
+```sh
+#!/bin/sh
+python "$HOME/.claude/skills/research-log/scripts/rlcheck.py" check
+```
+
+A commit is refused while any record is incomplete or stale, a snapshot is
+undocumented, or the decisions view is out of date.

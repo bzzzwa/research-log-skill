@@ -21,6 +21,9 @@ inputs:
     digest:
   - path: methodology/00-brief.md
     digest:
+decisions: []
+limitations: []
+retrievals: []
 outputs:
   - path: tasks/t0007-eu-screening/screening.csv
 supersedes:
@@ -41,12 +44,20 @@ databases, dates of retrieval, screening criteria applied>
 
 ## Limitations raised
 <what went wrong or stayed uncertain; each item also gets an entry in
-methodology/30-limitations.md>
+methodology/30-limitations.md and its id under limitations: above>
 
 ## Handoff
 <what a fresh session needs to know to continue: state, open threads,
 the single next action>
 ```
+
+The angle-bracket lines are template text. `validate` treats any `<...>` left in
+a complete record as a placeholder and fails, so replace every one. If a
+section genuinely has nothing to say, write `None.` and the reason — for
+example "None. Screening criteria were applied without borderline cases."
+
+Text inside code (fenced blocks or `` `inline` ``) is never scanned, so search
+strings with `<` or `>` in them belong in code.
 
 ## Front matter
 
@@ -57,29 +68,59 @@ the single next action>
 | `status` | `planned`, `in-progress`, `complete`, `superseded` |
 | `opened` / `closed` | ISO dates; `closed` required when `complete` |
 | `inputs` | every file or directory the result depends on, each with a `path` and a `digest` |
+| `decisions` | ids from `methodology/20-decisions.md` made during this task, e.g. `[D012, D013]` |
+| `limitations` | ids from `methodology/30-limitations.md` raised during this task, e.g. `[L004]` |
+| `retrievals` | snapshot directories under `sources/retrieved/` this task's result depends on |
 | `outputs` | every file this task produced |
 | `supersedes` | id of the record this one replaces, or empty |
 
-The front-matter parser deliberately supports only this shape. Anything more
-elaborate will raise an error rather than be silently misread.
+The front-matter parser deliberately supports only this shape: scalars, short
+inline lists like `[D012, D013]`, and block lists of scalars or of `path:`
+mappings. Anything more elaborate, including a repeated key, raises an error
+rather than being silently misread.
+
+## Declarations: decisions, limitations, retrievals
+
+These three keys turn "every decision has an entry in the log" from a promise
+into something the script can check. For a complete record:
+
+- each key must be present; `[]` when there is nothing to list,
+- every listed decision id must exist in `20-decisions.md`,
+- every listed limitation id must exist in `30-limitations.md`,
+- every listed retrieval must be a snapshot directory with a valid
+  `retrieval.md`, and must also be covered by `inputs` (listed itself, or
+  inside a listed directory), so that its digest is tracked.
+
+Retrievals may be written as an inline list or a block list:
+
+```yaml
+retrievals:
+  - sources/retrieved/2026-09-05-wos-open-science
+  - sources/retrieved/2026-09-05-cordis-open-science
+```
+
+The script can check that the ids exist. It cannot check that every decision
+you made is listed; that part is still yours.
 
 ## Inputs are the dependency declaration
 
 `inputs` is not documentation. It is what makes staleness detectable. List every
 input, including methodology documents when the task depended on them — a
 screening task depends on the brief, because a revised brief invalidates the
-screening.
+screening. A task that used a retrieval snapshot lists it here as well as under
+`retrievals`.
 
 After creating or editing a record's input list:
 
 ```
-python skills/research-log/scripts/rlcheck.py seal tasks/t0007-eu-screening
+rlcheck seal tasks/t0007-eu-screening
 ```
 
 This computes each digest and writes it into the record. A file gets
 `sha256:...`; a directory gets `tree:...`, a hash over the sorted relative paths
 and contents of everything inside it, so adding one PDF to a source folder is
-detected.
+detected. An input without a `digest:` line gets one. Only the `inputs` block is
+touched.
 
 ## Method as executed, not as planned
 
@@ -89,20 +130,34 @@ this record is. A discrepancy between plan and execution is normal and belongs
 in `methodology/20-decisions.md` as a decision, not hidden by rewriting either
 document.
 
+Exact queries do not need to be repeated here; point to the snapshot, whose
+manifest holds them verbatim.
+
 ## Handoff
 
 Write it for someone who has read nothing else. Three things: where the work
 stopped, what is unresolved, what the single next action is. If it takes more
 than a short paragraph, the task was too large and should have been split.
 
+## What validate checks
+
+| Status | Checked |
+|---|---|
+| any | front matter parses; required keys present; id unique; inputs exist; all six sections present; `## Question` filled with no placeholder |
+| `planned`, `in-progress` | missing outputs are warnings |
+| `complete` | `closed` set; no section empty; no placeholder anywhere; every output exists; `decisions`, `limitations`, `retrievals` declared and resolvable |
+
+`superseded` records are checked only for structure.
+
 ## Commands
 
-```
-python skills/research-log/scripts/rlcheck.py status               # summary for a new session
-python skills/research-log/scripts/rlcheck.py validate             # structure of every record
-python skills/research-log/scripts/rlcheck.py stale                # inputs that have drifted
-python skills/research-log/scripts/rlcheck.py seal tasks/t0007-... # record current input digests
-```
+See *Running the checks* in `SKILL.md` for how `rlcheck` is invoked and what to
+do when you cannot run it yourself.
 
-Run from the project root. `validate` and `stale` exit non-zero when they find
-something, so they can be wired into a pre-commit hook.
+```
+rlcheck status               # summary for a new session
+rlcheck validate             # records, logs, snapshots, derived files
+rlcheck stale                # inputs that have drifted
+rlcheck check                # both of the above
+rlcheck seal tasks/t0007-... # record current input digests
+```

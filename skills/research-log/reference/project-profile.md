@@ -56,6 +56,10 @@ belongs in 30-limitations.md as well>
 **Citation style.** <...>
 **Constraints.** <length, deadline, confidentiality>
 
+## Data handling
+<whether retrieved material may contain personal data, what may be saved in
+sources/retrieved/, and what must be anonymised or left out>
+
 ## Conventions specific to this project
 <anything the general skill does not cover>
 ```
@@ -75,8 +79,18 @@ research question. If yes, it is skill-level. If no, it is profile-level.
 
 ## In Claude.ai rather than Claude Code
 
-The same split works without a filesystem-based skill directory. Upload the
-skill folder as a zip under Settings, and keep `PROFILE.md` either on disk (read
-through the Filesystem connector at the start of each session) or as the
-instructions of a Claude Project, one Project per research project. The Project
-instructions are the project layer.
+Claude Code is the intended environment: the project directory is the working
+directory, so the model runs `rlcheck` itself and the closing gate is enforced
+in the session.
+
+The same split works in Claude.ai. Upload the skill folder as a zip under
+Settings, and keep `PROFILE.md` either on disk (read through the Filesystem
+connector at the start of each session) or as the instructions of a Claude
+Project, one Project per research project. The Project instructions are the
+project layer.
+
+The Filesystem connector reads and writes files but cannot execute anything on
+your machine, so in Claude.ai the model cannot run `rlcheck` against the
+project. It will give you the command and ask you to run it from the project
+root and paste the output. Keep a terminal open in the project for this, or
+wire `rlcheck check` into a pre-commit hook so the gate runs regardless.
