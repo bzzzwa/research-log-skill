@@ -10,7 +10,7 @@ Always run from the project root (the directory containing PROFILE.md).
 The script can live anywhere; it works on the current directory.
 
 Usage:
-    python rlcheck.py status               short summary for a new session
+    python rlcheck.py status               state for a new session; handoff of open tasks
     python rlcheck.py validate             records, logs, snapshots, derived files
     python rlcheck.py stale                recompute input digests, report drift
     python rlcheck.py check                validate + stale, for pre-commit hooks
@@ -245,6 +245,17 @@ def sections(body: str):
 
 def is_empty(text: str) -> bool:
     return not re.sub(r"<!--.*?-->", "", text, flags=re.S).strip()
+
+
+def parse_time(value: str):
+    """Parse an ISO date or date-time; None if it is neither."""
+    value = (value or "").strip()
+    for parser in (_dt.datetime.fromisoformat, lambda v: _dt.datetime.combine(_dt.date.fromisoformat(v), _dt.time())):
+        try:
+            return parser(value)
+        except ValueError:
+            continue
+    return None
 
 
 def _short(items, n=3):
@@ -626,6 +637,18 @@ def check_record(root: Path, path: Path, rep: Report, decision_ids, limitation_i
     if "## Question" in secs and (is_empty(question) or find_placeholders(question)):
         rep.fail(rel, "'## Question' must state the question before the task is opened")
 
+    if status == "in-progress":
+        # An open task must be resumable at any moment: its Handoff states
+        # where the work stands and the checkpoint says when that was true.
+        handoff = secs.get("## Handoff", "")
+        if "## Handoff" in secs and (is_empty(handoff) or find_placeholders(handoff)):
+            rep.fail(rel, "task is in progress but '## Handoff' does not state where the work stands")
+        cp = meta.get("checkpoint")
+        if not cp:
+            rep.fail(rel, "task is in progress but has no 'checkpoint:' time")
+        elif parse_time(cp) is None:
+            rep.fail(rel, f"checkpoint {cp!r} is not an ISO date or date-time")
+
     if complete:
         for heading in REQUIRED_HEADINGS:
             if heading in secs and is_empty(secs[heading]):
@@ -843,9 +866,10 @@ def status(root: Path) -> int:
     records = find_records(root)
     counts = {}
     open_records = []
+    in_progress = []
     for path in records:
         try:
-            meta, _ = load_md(path)
+            meta, body = load_md(path)
         except ValueError:
             counts["unparseable"] = counts.get("unparseable", 0) + 1
             continue
@@ -853,6 +877,14 @@ def status(root: Path) -> int:
         counts[st] = counts.get(st, 0) + 1
         if st in ("planned", "in-progress"):
             open_records.append(f"  {meta.get('id')} {meta.get('title')} [{st}]")
+        if st == "in-progress":
+            in_progress.append((path, meta, sections(body).get("## Handoff", "").strip()))
+
+    if in_progress:
+        print("research-log: a task is in progress. Before continuing it, read its")
+        print("record.md. The record, not your memory or a conversation summary, is")
+        print("the state of the work.")
+        print()
 
     print(f"project: {root}")
     print(f"records: {len(records)}")
@@ -861,6 +893,14 @@ def status(root: Path) -> int:
     if open_records:
         print("open:")
         print("\n".join(open_records))
+    for path, meta, handoff in in_progress:
+        print()
+        print(f"in progress: {meta.get('id')} {meta.get('title')}")
+        print(f"  record:     {path.relative_to(root).as_posix()}")
+        print(f"  checkpoint: {meta.get('checkpoint') or 'none recorded'}")
+        print("  handoff:")
+        for line in (handoff or "(empty)").splitlines():
+            print(f"    {line}")
 
     text, entries = load_decisions(root)
     if entries:
@@ -876,6 +916,12 @@ def status(root: Path) -> int:
 
 
 def main(argv):
+    # Output may be read through a pipe (a hook, a pre-commit run). On Windows
+    # a pipe defaults to the locale code page, which cannot encode everything
+    # a record may contain; UTF-8 keeps it readable everywhere.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
     if len(argv) < 2:
         print(__doc__)
         return 2

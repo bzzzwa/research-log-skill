@@ -1,6 +1,6 @@
 ---
 name: research-log
-description: Keep the methodology log and task records of a social-science desk-research project complete enough that any phase can be resumed in a fresh conversation with no loss of context. Use whenever working inside a research project directory that contains PROFILE.md or a methodology/ folder; when opening, closing or resuming a research task; when asked to record a methodological decision, log a limitation or caveat, update the plan, capture an observation for the final output, save or snapshot search results from a database, website or tool, check deviations from the brief, check whether outputs have gone stale, or set up a new research project directory. Also use when the user says they are starting a new session, continuing earlier work, or asks what state the project is in.
+description: Keep the methodology log and task records of a social-science desk-research project complete enough that any phase can be resumed in a fresh conversation with no loss of context. Use whenever working inside a research project directory that contains PROFILE.md or a methodology/ folder; when opening, closing or resuming a research task; when asked to record a methodological decision, log a limitation or caveat, update the plan, capture an observation for the final output, save or snapshot search results from a database, website or tool, check deviations from the brief, check whether outputs have gone stale, or set up a new research project directory. Also use when the user says they are starting a new session, continuing earlier work, or asks what state the project is in, and after the context has been compacted while a research task is open.
 ---
 
 # Research Log
@@ -128,6 +128,49 @@ can decide what to do with it.
 3. Run `rlcheck seal tasks/tNNNN-<slug>` to record the input digests.
 4. Confirm the plan with the user before doing the work. Screening criteria,
    inclusion rules and search vocabulary are the user's decisions, not yours.
+5. When the work starts, set `status: in-progress`, set `checkpoint:` to the
+   current date-time, and write a first `## Handoff`: what is about to be done
+   and what the first step is.
+
+## While a task is open
+
+The closing gate can only check what has been written down. Context is lost
+during the work — to compaction, an interrupted session, a closed window —
+not at the end of it. So everything is written at the moment it happens, and
+the record is never more than one step behind the conversation.
+
+**At the moment it happens:**
+
+- A decision the user confirms goes into `methodology/20-decisions.md` at once,
+  and its id into the record's `decisions:`; then run `rlcheck decisions`.
+  Not at the end of the task.
+- A gap, doubt or compromise goes into `methodology/30-limitations.md` at once,
+  and its id into `limitations:`.
+- A tool result that will be used becomes a snapshot at once (see above).
+- An observation for the deliverable goes into `methodology/40-insights.md`
+  at once.
+
+**At every checkpoint**, rewrite `## Method as executed` and `## Handoff` to
+state what is true now, and update `checkpoint:` to the current date-time.
+Checkpoints are:
+
+- after each substantive step: a search run, a batch screened, a source set
+  extracted, a draft section written;
+- before starting anything long: a large retrieval, a long batch of reading;
+- whenever the user pauses, changes the subject or says they are stopping;
+- whenever you notice the conversation has become long.
+
+The test for a good checkpoint: if the conversation ended now, could a fresh
+session continue from the record alone, without redoing anything and without
+asking the user what was decided? If not, the record is behind.
+
+Write outputs to the task directory as they are produced, not all at the end.
+A half-screened table on disk is worth more than a fully screened one in the
+conversation.
+
+`rlcheck validate` holds an in-progress record to this: its `## Handoff` must
+say where the work stands and it must have a valid `checkpoint:`. It cannot
+tell whether the handoff is current; that part is yours.
 
 ## Closing a task
 
@@ -157,6 +200,14 @@ If a check fails, fix it before reporting completion. Do not report a task as
 done and list what is still missing.
 
 ## Resuming in a fresh conversation
+
+A compaction is a resume. After the context has been compacted, or when a
+session hook has just shown `rlcheck status` output, treat the conversation
+summary as a pointer, not as the state: if a task is in progress, read its
+`record.md` before doing anything else, and continue from its `## Handoff`.
+Where the summary and the record disagree, the record wins; if the record looks
+behind the summary, tell the user what seems to be missing rather than filling
+it in from the summary.
 
 Read in this order, and stop as soon as you have enough:
 
@@ -204,5 +255,7 @@ point at it.
   content is not.
 - Never let a result rest on a tool response that was not snapshotted, or on
   your own knowledge presented as a finding.
+- Never keep a decision, limitation or partial output only in the conversation
+  until the end of a task. Write it when it happens.
 - Never assess staleness, completeness or coverage by reading files when the
   script can answer it, and never report a check you have not seen run.

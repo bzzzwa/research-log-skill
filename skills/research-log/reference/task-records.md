@@ -15,6 +15,7 @@ id: t0007
 title: Screening of EU-level policy documents
 status: planned
 opened: 2026-08-20
+checkpoint:
 closed:
 inputs:
   - path: sources/policy/eu
@@ -67,6 +68,7 @@ strings with `<` or `>` in them belong in code.
 | `title` | short, human |
 | `status` | `planned`, `in-progress`, `complete`, `superseded` |
 | `opened` / `closed` | ISO dates; `closed` required when `complete` |
+| `checkpoint` | ISO date-time when `## Method as executed` and `## Handoff` were last brought up to date; required when `in-progress` |
 | `inputs` | every file or directory the result depends on, each with a `path` and a `digest` |
 | `decisions` | ids from `methodology/20-decisions.md` made during this task, e.g. `[D012, D013]` |
 | `limitations` | ids from `methodology/30-limitations.md` raised during this task, e.g. `[L004]` |
@@ -139,12 +141,19 @@ Write it for someone who has read nothing else. Three things: where the work
 stopped, what is unresolved, what the single next action is. If it takes more
 than a short paragraph, the task was too large and should have been split.
 
+While the task is in progress, the handoff is rewritten at every checkpoint
+(see *While a task is open* in `SKILL.md`) and `checkpoint:` is updated with
+it. `rlcheck status` prints the handoff and checkpoint of every in-progress
+task, so a session hook can put them in front of the model after a compaction.
+A handoff that is out of date is worse than none, because it is believed.
+
 ## What validate checks
 
 | Status | Checked |
 |---|---|
 | any | front matter parses; required keys present; id unique; inputs exist; all six sections present; `## Question` filled with no placeholder |
 | `planned`, `in-progress` | missing outputs are warnings |
+| `in-progress` | `## Handoff` filled with no placeholder; `checkpoint` set to an ISO date or date-time |
 | `complete` | `closed` set; no section empty; no placeholder anywhere; every output exists; `decisions`, `limitations`, `retrievals` declared and resolvable |
 
 `superseded` records are checked only for structure.
@@ -155,7 +164,7 @@ See *Running the checks* in `SKILL.md` for how `rlcheck` is invoked and what to
 do when you cannot run it yourself.
 
 ```
-rlcheck status               # summary for a new session
+rlcheck status               # state for a new session, with handoffs of open tasks
 rlcheck validate             # records, logs, snapshots, derived files
 rlcheck stale                # inputs that have drifted
 rlcheck check                # both of the above

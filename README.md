@@ -39,6 +39,12 @@ and connectors are saved as dated, frozen snapshots with the exact query, at the
 moment they are retrieved, and declared as task inputs. A search that cannot be
 rerun can still be checked.
 
+**Write when it happens, not when the task closes.** Context is lost during the
+work, before any closing gate runs. Decisions, limitations and outputs are
+written as they occur, and an open task's record is brought up to date at every
+checkpoint, so the record is never more than one step behind the conversation.
+After a compaction the record, not the conversation summary, is the state.
+
 **The log is append-only; the current view is derived.** Decisions are never
 edited, only superseded by later ones. `rlcheck.py decisions` derives the set
 still in force, so a fresh session reads the rules that apply now without
@@ -95,3 +101,37 @@ python "$HOME/.claude/skills/research-log/scripts/rlcheck.py" check
 
 A commit is refused while any record is incomplete or stale, a snapshot is
 undocumented, or the decisions view is out of date.
+
+## Session hook (Claude Code)
+
+A `SessionStart` hook puts `rlcheck status` in front of the model whenever a
+session starts, resumes, is cleared or has just been compacted. For an
+in-progress task, `status` prints its checkpoint and handoff together with an
+instruction to read the record before continuing. In the research project's
+`.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd \"$CLAUDE_PROJECT_DIR\" && python \"$HOME/.claude/skills/research-log/scripts/rlcheck.py\" status"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Adjust the script path if the skill is installed in the project's
+`.claude/skills/` instead.
+
+The hook can only restore what is already on disk. There is deliberately no
+`PreCompact` hook: it runs before compaction but cannot make the model write
+anything, and its output reaches only the user. Keeping the record current is
+the job of the checkpoint rules in `SKILL.md`; the hook makes sure the model
+reads the result.
