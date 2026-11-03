@@ -79,9 +79,14 @@ project's root; the model runs the checks itself.
 
 **Claude.ai.** Zip the `research-log` folder and upload it under
 Settings → Skills (requires code execution enabled). Give the Filesystem
-connector access to the project folder and to the store. The connector cannot
-execute anything on your machine, so the model will ask you to run `rlcheck`
-and paste the output; keep a terminal open in the project.
+connector access to the project folder and to the store. Claude.ai's code
+execution runs in a sandbox, not on your computer, so the model cannot run
+`rlcheck` against the project; it gives you the exact command instead and asks
+you to paste the output. It takes the paths for that command from
+`research-log.local.ini`, where `init` records them. Keep a clone of this
+repository (or at least `rlcheck.py`) on each computer; `rlcheck` refuses to run
+outside a project folder, so a stray run in the sandbox cannot report a false
+clean result.
 
 ## Set up a research project
 
@@ -96,8 +101,9 @@ python <skill-dir>/scripts/rlcheck.py claude-settings
 
 `init` writes `research-log.ini` (the project id, in git), the methodology
 skeleton, `.gitignore` entries, the store layout and its marker, and
-`research-log.local.ini` (this machine's store path, not in git). On another
-computer, after cloning, only the store path is needed:
+`research-log.local.ini` (this machine's store path and the location of Python
+and `rlcheck.py`, not in git). On another computer, after cloning, only the
+store path is needed:
 
 ```
 python <skill-dir>/scripts/rlcheck.py init --store "D:\Sync\Research\open-science-2026"
@@ -147,7 +153,7 @@ machine-local files, which `init` adds to `.gitignore`:
 
 | File | Why it stays local |
 |---|---|
-| `research-log.local.ini` | the store's path differs on every computer |
+| `research-log.local.ini` | the store's path and where Python and `rlcheck.py` are differ on every computer |
 | `.rlcheck-cache.json` | cache of file digests, so cloud-synced files are not re-read on every check |
 | `.claude/settings.local.json` | Claude Code access and hook, with this machine's paths |
 

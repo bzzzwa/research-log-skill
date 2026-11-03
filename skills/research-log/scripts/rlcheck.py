@@ -1254,13 +1254,57 @@ def _ensure_gitignore(root: Path):
     return missing
 
 
-def _write_local_config(root: Path, store_path: Path):
-    (root / LOCAL_CONFIG).write_text(
-        "# Local to this machine; never commit this file.\n"
-        "# Where the shared store of this project is on this computer.\n"
-        f"[store]\npath = {store_path}\n",
-        encoding="utf-8",
-    )
+def _read_local(root: Path):
+    """All values of research-log.local.ini as {(section, key): value}."""
+    path = root / LOCAL_CONFIG
+    vals = {}
+    if path.is_file():
+        ini = _read_ini(path)
+        for sec in ini.sections():
+            for k, v in ini.items(sec):
+                vals[(sec, k)] = v
+    return vals
+
+
+def _write_local(root: Path, vals):
+    lines = ["# Local to this machine; never commit this file.", ""]
+    if vals.get(("store", "path")):
+        lines += [
+            "# Where the shared store of this project is on this computer.",
+            "[store]",
+            f"path = {vals[('store', 'path')]}",
+            "",
+        ]
+    tools = sorted((k, v) for (sec, k), v in vals.items() if sec == "tools")
+    if tools:
+        lines += [
+            "# How to run rlcheck on this computer. Claude reads this to give you the",
+            "# exact command when it cannot run the script itself (e.g. in Claude.ai).",
+            "[tools]",
+        ] + [f"{k} = {v}" for k, v in tools] + [""]
+    for sec in sorted({sec for sec, _ in vals} - {"store", "tools"}):
+        lines.append(f"[{sec}]")
+        lines += [f"{k} = {v}" for (s2, k), v in sorted(vals.items()) if s2 == sec]
+        lines.append("")
+    (root / LOCAL_CONFIG).write_text("\n".join(lines), encoding="utf-8")
+
+
+def _this_tool():
+    return {
+        ("tools", "python"): str(Path(sys.executable).resolve()),
+        ("tools", "rlcheck"): str(Path(__file__).resolve()),
+    }
+
+
+def is_project_root(root: Path) -> bool:
+    return (root / CONFIG).is_file() or (root / "PROFILE.md").is_file() or (root / "methodology").is_dir()
+
+
+NOT_A_PROJECT = """not a research-log project: {root}
+Run rlcheck from the project root, the folder that contains research-log.ini.
+If you are an AI assistant running this in your own sandbox: that is not the
+user's computer, and nothing checked here says anything about their project.
+Give the user the command to run instead."""
 
 
 def init(root: Path, args) -> int:
@@ -1333,8 +1377,21 @@ def init(root: Path, args) -> int:
             if not (sp / d).is_dir():
                 (sp / d).mkdir()
                 done.append(f"created store {d}/")
-        _write_local_config(root, sp)
-        done.append(f"wrote {LOCAL_CONFIG} (store at {sp})")
+    else:
+        sp = None
+
+    local = _read_local(root)
+    want = _this_tool()
+    if sp is not None:
+        want[("store", "path")] = str(sp)
+    changed = [k for k, v in want.items() if local.get(k) != v]
+    if changed:
+        local.update(want)
+        _write_local(root, local)
+        if ("store", "path") in changed:
+            done.append(f"recorded in {LOCAL_CONFIG}: store at {sp}")
+        if any(sec == "tools" for sec, _ in changed):
+            done.append(f"recorded in {LOCAL_CONFIG}: rlcheck at {want[('tools', 'rlcheck')]}")
 
     if done:
         print("\n".join(f"  {line}" for line in done))
@@ -1383,6 +1440,9 @@ def doctor(root: Path) -> int:
             print(f"      -> {how}")
 
     print(f"project: {root}\n")
+    if not is_project_root(root):
+        note("this folder is not a research-log project yet",
+             "if it should be, set it up with init; otherwise run doctor from the project root")
 
     # project basics
     if any((p / ".git").exists() for p in [root, *root.parents]):
@@ -1416,6 +1476,19 @@ def doctor(root: Path) -> int:
         fix(f".gitignore does not exclude {', '.join(gi)}", f"{cmd} init")
     else:
         ok(".gitignore excludes machine-local files")
+
+    recorded = _read_local(root).get(("tools", "rlcheck"))
+    here = Path(__file__).resolve()
+    if not recorded:
+        fix("where rlcheck is on this machine is not recorded, so Claude cannot give you"
+            " commands when it cannot run them itself", f"{cmd} init")
+    elif Path(recorded) == here:
+        ok(f"rlcheck location recorded in {LOCAL_CONFIG}")
+    elif not Path(recorded).is_file():
+        fix(f"recorded rlcheck location no longer exists: {recorded}", f"{cmd} init")
+    else:
+        note(f"{LOCAL_CONFIG} records rlcheck at {recorded}, but this is {here}",
+             f"{cmd} init to record this copy instead")
 
     # store
     if STORE.id:
@@ -1547,7 +1620,16 @@ def main(argv):
         CACHE.save()
 
 
+PROJECT_COMMANDS = {
+    "validate", "stale", "check", "status", "seal", "decisions",
+    "retrieval", "where", "claude-settings",
+}
+
+
 def _dispatch(command, root, argv):
+    if command in PROJECT_COMMANDS and not is_project_root(root):
+        print(NOT_A_PROJECT.format(root=root))
+        return 2
     if command == "doctor":
         return doctor(root)
     if command == "init":

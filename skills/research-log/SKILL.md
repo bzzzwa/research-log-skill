@@ -30,26 +30,58 @@ Never put project-specific rules in this skill, and never put general rules in
 ## Running the checks
 
 Completeness, staleness and the current set of decisions are answered by
-`scripts/rlcheck.py` in this skill's directory, never by reading and judging.
-Below, `rlcheck <command>` stands for
+`scripts/rlcheck.py`, never by reading and judging. Below, `rlcheck <command>`
+means running that script **on the user's computer, with the project root as
+the working directory**. The script works on the current directory, so it does
+not matter where it is installed. Run anywhere else, it refuses with "not a
+research-log project".
+
+First decide where your shell is.
+
+**Claude Code, or any shell that runs on the user's computer in the project**
+(the project files are in your working directory): run
+`python <this skill's directory>/scripts/rlcheck.py <command>` yourself and act
+on the output.
+
+**Claude.ai, or any environment where your shell is a sandbox.** Claude.ai's
+code execution runs on a separate machine, not the user's. Working through a
+Filesystem connector, you can read and write the user's files but you cannot
+execute anything on their computer. **Never run rlcheck in your sandbox**: it
+would check an empty folder, and its output says nothing about the project.
+Instead, give the user the command, ask them to run it and paste the output,
+and wait. Until the output is in the conversation, the step has not happened:
+do not report a task as closed, a check as passed or a project as fresh.
+
+To give the user a command that works on their computer, read
+`research-log.local.ini` in the project root through the connector. Its
+`[tools]` section records where Python and `rlcheck.py` are on that machine.
+Give both lines, with the paths filled in, in the form for the user's shell:
 
 ```
-python <this skill's directory>/scripts/rlcheck.py <command>
+# PowerShell (Windows default)
+Set-Location "<project root>"
+& "<tools.python>" "<tools.rlcheck>" <command>
+
+# cmd.exe
+cd /d "<project root>"
+"<tools.python>" "<tools.rlcheck>" <command>
+
+# macOS / Linux
+cd "<project root>"
+"<tools.python>" "<tools.rlcheck>" <command>
 ```
 
-run with the **project root** as the working directory. The script works on the
-current directory, so it does not matter where the skill itself is installed.
+In PowerShell the `&` is required: without it a quoted path is printed, not run.
+If the paths in `[tools]` are Windows paths, assume PowerShell unless the user
+says otherwise.
 
-**When you can execute commands in the project** (Claude Code, or any
-environment where the project directory is your working directory): run the
-command yourself and act on its output.
-
-**When you cannot** — for example in Claude.ai working through a Filesystem
-connector, which reads and writes the user's files but cannot execute anything
-on their machine — do not skip the step and do not guess its result. Give the
-user the exact command, ask them to run it from the project root and paste the
-output, and wait. Until the output is in the conversation, the step has not
-happened: do not report a task as closed or a project as fresh.
+If there is no `research-log.local.ini`, or it has no `[tools]` section, this
+machine has not been set up yet. Ask the user where `rlcheck.py` is on their
+computer (it is in `skills/research-log/scripts/` of the skill's repository, if
+they have a clone). If they do not have it, offer to write a copy of this
+skill's `scripts/rlcheck.py` through the connector into a folder they choose,
+outside the project. Then the first command they run is `rlcheck init`, which
+records its own location in `[tools]` for every later command.
 
 Never say a check passed unless you have seen its output in this session.
 
@@ -84,6 +116,8 @@ The parts, and what you need from the user for each:
    network folder that holds the large files. Then
    `rlcheck init --id <id> --store "<path>"`. On a second machine the id is
    already in `research-log.ini`; only `rlcheck init --store "<path>"` is needed.
+   `init` also records where `rlcheck.py` is on this machine, which is how you
+   can later give the user exact commands in Claude.ai.
    If the folder already contains files but no store marker, `init` refuses;
    rerun with `--adopt` only after the user confirms it is the right folder.
 3. **Access for Claude.** In Claude Code, run `rlcheck claude-settings` after

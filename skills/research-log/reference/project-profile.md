@@ -92,10 +92,12 @@ Project, one Project per research project. The Project instructions are the
 project layer.
 
 The Filesystem connector reads and writes files but cannot execute anything on
-your machine, so in Claude.ai the model cannot run `rlcheck` against the
-project. It will give you the command and ask you to run it from the project
-root and paste the output. Keep a terminal open in the project for this, or
-wire `rlcheck check` into a pre-commit hook so the gate runs regardless.
+your machine, and Claude.ai's own code execution runs in a sandbox elsewhere, so
+in Claude.ai the model cannot run `rlcheck` against the project. It will give
+you the exact command, with the paths `init` recorded in
+`research-log.local.ini`, and ask you to run it from the project root and paste
+the output. Keep a terminal open in the project for this, or wire
+`rlcheck check` into a pre-commit hook so the gate runs regardless.
 
 Give the connector access to the store as well as to the project folder;
 otherwise the model can read the records but not the sources they point to.
