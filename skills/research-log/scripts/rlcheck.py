@@ -9,7 +9,16 @@ retrieval snapshot is documented.
 Always run from the project root (the directory containing PROFILE.md).
 The script can live anywhere; it works on the current directory.
 
+Large source files live outside the repository in a shared store. Records
+refer to them as store:<path>; each machine maps the store to a local path
+in research-log.local.ini.
+
 Usage:
+    python rlcheck.py doctor               check the setup and say how to fix it
+    python rlcheck.py init [--id ID] [--store PATH] [--adopt]
+                                           create or complete the project setup
+    python rlcheck.py claude-settings      write .claude/settings.local.json for Claude Code
+    python rlcheck.py where store:<path>   show where a store path is on this machine
     python rlcheck.py status               state for a new session; handoff of open tasks
     python rlcheck.py validate             records, logs, snapshots, derived files
     python rlcheck.py stale                recompute input digests, report drift
@@ -18,14 +27,16 @@ Usage:
     python rlcheck.py decisions            regenerate methodology/25-decisions-in-force.md
     python rlcheck.py retrieval <slug>     create a dated retrieval snapshot directory
 
-validate, stale and check exit non-zero when they find a problem.
+doctor, validate, stale and check exit non-zero when they find a problem.
 Zero dependencies, Python 3.8+.
 """
 
 from __future__ import annotations
 
+import configparser
 import datetime as _dt
 import hashlib
+import json
 import re
 import sys
 from pathlib import Path
@@ -37,6 +48,17 @@ DECISIONS_IN_FORCE = "methodology/25-decisions-in-force.md"
 LIMITATIONS = "methodology/30-limitations.md"
 RETRIEVED_DIR = "sources/retrieved"
 MANIFEST_NAME = "retrieval.md"
+
+CONFIG = "research-log.ini"
+LOCAL_CONFIG = "research-log.local.ini"
+CACHE_FILE = ".rlcheck-cache.json"
+CLAUDE_LOCAL_SETTINGS = ".claude/settings.local.json"
+STORE_PREFIX = "store:"
+STORE_MARKER = ".research-store"
+STORE_DIRS = ["inbox", "sources", "exports"]
+STORE_INBOX = "inbox"
+GITIGNORE_LINES = [LOCAL_CONFIG, CACHE_FILE, CLAUDE_LOCAL_SETTINGS]
+PROJECT_ID = re.compile(r"^[a-z0-9][a-z0-9-]{1,62}$")
 
 REQUIRED_KEYS = ["id", "title", "status", "opened", "inputs", "outputs"]
 # Declarations that a complete record must make explicitly, even if empty ([]).
@@ -94,6 +116,13 @@ class Report:
     def warn(self, where, msg):
         print(f"WARN {where}: {msg}")
         self.warns += 1
+
+    def fail_once(self, key, where, msg):
+        if not hasattr(self, "_once"):
+            self._once = set()
+        if key not in self._once:
+            self._once.add(key)
+            self.fail(where, msg)
 
 
 # --------------------------------------------------------------------------
@@ -264,11 +293,161 @@ def _short(items, n=3):
 
 
 # --------------------------------------------------------------------------
-# Digests
+# Configuration, the shared store and digests
 # --------------------------------------------------------------------------
 
 
+def _read_ini(path: Path):
+    cp = configparser.ConfigParser(interpolation=None)
+    cp.read(path, encoding="utf-8")
+    return cp
+
+
+def read_marker(store_path: Path):
+    """Return the project id written in a store's marker file, or None."""
+    marker = store_path / STORE_MARKER
+    if not marker.is_file():
+        return None
+    for line in marker.read_text(encoding="utf-8").splitlines():
+        if line.strip().startswith("id:"):
+            return line.split(":", 1)[1].strip()
+    return None
+
+
+class Store:
+    """The project's shared store as seen from this machine.
+
+    state is one of:
+      'none'          the project declares no store (no research-log.ini [store])
+      'unmapped'      declared, but this machine has no local path for it
+      'unreachable'   mapped to a path that does not exist (drive not mounted,
+                      folder not synced)
+      'wrong'         the path exists but is not this project's store
+      'ok'            usable
+    Only 'ok' allows store paths to be read; 'unmapped' and 'unreachable' are
+    normal on a machine without the store; 'none' and 'wrong' are setup errors.
+    """
+
+    def __init__(self, root: Path):
+        self.root = root
+        self.id = None
+        self.path = None
+        self.state = "none"
+        self.reason = f"{CONFIG} declares no [store]"
+
+        cfg = root / CONFIG
+        if cfg.is_file():
+            ini = _read_ini(cfg)
+            self.id = ini.get("store", "id", fallback=None) or None
+        if not self.id:
+            return
+
+        local = root / LOCAL_CONFIG
+        raw = None
+        if local.is_file():
+            raw = _read_ini(local).get("store", "path", fallback=None)
+        if not raw:
+            self.state = "unmapped"
+            self.reason = f"store '{self.id}' is not mapped on this machine ({LOCAL_CONFIG})"
+            return
+
+        path = Path(raw.strip()).expanduser()
+        if not path.is_absolute():
+            path = (root / path)
+        self.path = path
+        if not path.is_dir():
+            self.state = "unreachable"
+            self.reason = f"store path does not exist on this machine: {path}"
+            return
+
+        marker = read_marker(path)
+        if marker is None:
+            self.state = "wrong"
+            self.reason = f"{path} has no {STORE_MARKER}; it is not a research-log store"
+        elif marker != self.id:
+            self.state = "wrong"
+            self.reason = f"{path} is the store of '{marker}', not of '{self.id}'"
+        else:
+            self.state = "ok"
+            self.reason = ""
+
+    @property
+    def usable(self):
+        return self.state == "ok"
+
+    @property
+    def is_error(self):
+        return self.state in ("none", "wrong")
+
+
+STORE = None  # set in main()
+
+
+def is_store_path(rel: str) -> bool:
+    return isinstance(rel, str) and rel.strip().startswith(STORE_PREFIX)
+
+
+def resolve(root: Path, rel: str):
+    """Map a record path to (state, Path or None, reason).
+
+    state is 'ok' for a usable location, otherwise the store state.
+    Plain paths are relative to the project root and always 'ok'.
+    """
+    rel = rel.strip()
+    if not is_store_path(rel):
+        return "ok", root / rel, ""
+    store = STORE if STORE is not None else Store(root)
+    inner = rel[len(STORE_PREFIX):].strip().lstrip("/\\")
+    if not store.usable:
+        return store.state, None, store.reason
+    return "ok", store.path / inner, ""
+
+
+class DigestCache:
+    """Per-machine cache of file hashes keyed by path, size and mtime.
+
+    Store files are often cloud placeholders that are downloaded on read;
+    the cache keeps a repeated stale check from reading them again.
+    """
+
+    def __init__(self, root: Path):
+        self.file = root / CACHE_FILE
+        self.data = {}
+        self.dirty = False
+        try:
+            self.data = json.loads(self.file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            self.data = {}
+
+    def hash(self, path: Path) -> str:
+        st = path.stat()
+        key = str(path.resolve())
+        hit = self.data.get(key)
+        if hit and hit.get("size") == st.st_size and hit.get("mtime") == st.st_mtime_ns:
+            return hit["sha256"]
+        h = hashlib.sha256()
+        with path.open("rb") as fh:
+            for chunk in iter(lambda: fh.read(65536), b""):
+                h.update(chunk)
+        value = h.hexdigest()
+        self.data[key] = {"size": st.st_size, "mtime": st.st_mtime_ns, "sha256": value}
+        self.dirty = True
+        return value
+
+    def save(self):
+        if self.dirty:
+            try:
+                self.file.write_text(json.dumps(self.data, indent=0, sort_keys=True), encoding="utf-8")
+            except OSError:
+                pass
+
+
+CACHE = None  # set in main()
+
+
 def _hash_file(path: Path) -> str:
+    if CACHE is not None:
+        return CACHE.hash(path)
     h = hashlib.sha256()
     with path.open("rb") as fh:
         for chunk in iter(lambda: fh.read(65536), b""):
@@ -276,9 +455,22 @@ def _hash_file(path: Path) -> str:
     return h.hexdigest()
 
 
+UNAVAILABLE = ("unmapped", "unreachable")
+
+
 def digest(root: Path, rel: str) -> str:
-    """Digest of a file or of a directory tree, as 'sha256:...' or 'tree:...'."""
-    target = (root / rel).resolve()
+    """Digest of a file or directory tree.
+
+    Returns 'sha256:...' or 'tree:...', or one of the sentinel values
+    'missing' (location reachable, nothing there), 'unavailable' (store not
+    reachable on this machine) or 'error' (store misconfigured).
+    """
+    state, target, _ = resolve(root, rel)
+    if state in UNAVAILABLE:
+        return "unavailable"
+    if state != "ok":
+        return "error"
+    target = target.resolve()
     if not target.exists():
         return "missing"
     if target.is_file():
@@ -294,6 +486,24 @@ def digest(root: Path, rel: str) -> str:
             )
     h = hashlib.sha256("\n".join(entries).encode("utf-8"))
     return "tree:" + h.hexdigest()
+
+
+def check_path(root: Path, rel: str, rep: "Report", where: str, what: str, missing_is_fail=True):
+    """Report on whether a record path exists. Returns True if it was checked."""
+    state, target, reason = resolve(root, rel)
+    if state in UNAVAILABLE:
+        rep.unchecked = getattr(rep, "unchecked", 0) + 1
+        return False
+    if state != "ok":
+        rep.fail_once(("store", state), CONFIG if state == "none" else LOCAL_CONFIG,
+                      f"{reason}; store paths cannot be checked")
+        return False
+    if not target.exists():
+        if missing_is_fail:
+            rep.fail(where, f"{what} does not exist: {rel}")
+        else:
+            rep.warn(where, f"{what} does not exist yet: {rel}")
+    return True
 
 
 def _norm(rel: str) -> str:
@@ -540,7 +750,16 @@ def check_snapshot(root: Path, snap: Path, rep: Report):
         p for p in snap.rglob("*")
         if p.is_file() and p.name != MANIFEST_NAME and not any(s in SKIP_NAMES for s in p.parts)
     ]
-    if not data_files and not zero_results:
+    data = meta.get("data")
+    if data:
+        # results too large for the repository live in the store
+        if not is_store_path(data):
+            rep.fail(where, f"'data' must be a store path (store:...), got {data!r}")
+        elif check_path(root, data, rep, where, "snapshot data"):
+            _, target, _ = resolve(root, data)
+            if target.is_dir() and not any(p.is_file() for p in target.rglob("*")) and not zero_results:
+                rep.fail(where, f"snapshot data directory {data} is empty")
+    elif not data_files and not zero_results:
         rep.fail(rel, "snapshot contains no result files; save what the tool returned, or set results: 0")
 
 
@@ -596,6 +815,13 @@ def find_records(root: Path):
     if not tasks.is_dir():
         return []
     return sorted(p / RECORD_NAME for p in tasks.iterdir() if (p / RECORD_NAME).is_file())
+
+
+def _in_inbox(rel: str) -> bool:
+    if not is_store_path(rel):
+        return False
+    inner = _norm(rel[len(STORE_PREFIX):])
+    return inner == STORE_INBOX or inner.startswith(STORE_INBOX + "/")
 
 
 def _input_paths(meta):
@@ -663,16 +889,14 @@ def check_record(root: Path, path: Path, rep: Report, decision_ids, limitation_i
         if not isinstance(item, dict) or "path" not in item:
             rep.fail(rel, f"every input needs a 'path' field, got {item!r}")
             continue
-        if not (root / item["path"]).exists():
-            rep.fail(rel, f"input path does not exist: {item['path']}")
+        if _in_inbox(item["path"]):
+            rep.fail(rel, f"input {item['path']} is in the inbox; catalogue it into store:sources/ first")
+            continue
+        check_path(root, item["path"], rep, rel, "input path")
 
     for out in meta.get("outputs") or []:
         out_path = out["path"] if isinstance(out, dict) else out
-        if not (root / out_path).exists():
-            if complete:
-                rep.fail(rel, f"declared output does not exist: {out_path}")
-            else:
-                rep.warn(rel, f"declared output does not exist yet: {out_path}")
+        check_path(root, out_path, rep, rel, "declared output", missing_is_fail=complete)
 
     # --- declarations: decisions, limitations, retrievals
     for key in DECLARATION_KEYS:
@@ -707,10 +931,18 @@ def check_record(root: Path, path: Path, rep: Report, decision_ids, limitation_i
             continue
         if not _norm(snap_path).startswith(RETRIEVED_DIR + "/"):
             rep.fail(rel, f"retrieval {snap_path} is not under {RETRIEVED_DIR}/")
-        if not (root / snap_path / MANIFEST_NAME).is_file():
+        manifest = root / snap_path / MANIFEST_NAME
+        if not manifest.is_file():
             rep.fail(rel, f"retrieval {snap_path} has no {MANIFEST_NAME}")
         if not covered_by(snap_path, inputs):
             rep.fail(rel, f"retrieval {snap_path} is not among the inputs, so its digest is not tracked")
+        if manifest.is_file():
+            try:
+                data = load_md(manifest)[0].get("data")
+            except ValueError:
+                data = None
+            if data and not covered_by(data, inputs):
+                rep.fail(rel, f"retrieval {snap_path} keeps its data in {data}, which is not among the inputs")
 
 
 def validate(root: Path) -> int:
@@ -731,6 +963,9 @@ def validate(root: Path) -> int:
         f"\n{len(records)} record(s), {len(decision_ids or [])} decision(s), "
         f"{len(snapshots)} snapshot(s) checked: {rep.fails} problem(s), {rep.warns} warning(s)."
     )
+    unchecked = getattr(rep, "unchecked", 0)
+    if unchecked:
+        print(f"{unchecked} store path(s) not checked: {STORE.reason}.")
     return 1 if rep.fails else 0
 
 
@@ -738,6 +973,8 @@ def stale(root: Path) -> int:
     records = find_records(root)
     drifted = 0
     unsealed = 0
+    unavailable = 0
+    errors = 0
 
     for path in records:
         rel = path.relative_to(root).as_posix()
@@ -760,15 +997,32 @@ def stale(root: Path) -> int:
                 unsealed += 1
                 continue
             current = digest(root, item["path"])
-            if current != recorded:
+            if current == "unavailable":
+                unavailable += 1
+                continue
+            if current == "error":
+                if not errors:
+                    print(f"FAIL {STORE.reason}")
+                errors += 1
+                continue
+            if current == "missing":
+                print(f"MISSING {rel}")
+                print(f"       input:    {item['path']}")
+                print(f"       recorded: {recorded}")
+                drifted += 1
+            elif current != recorded:
                 print(f"STALE {rel}")
                 print(f"       input:    {item['path']}")
                 print(f"       recorded: {recorded}")
                 print(f"       current:  {current}")
                 drifted += 1
 
-    print(f"\n{len(records)} record(s) checked, {drifted} stale, {unsealed} unsealed input(s).")
-    return 1 if drifted or unsealed else 0
+    print(f"\n{len(records)} record(s) checked, {drifted} stale or missing, {unsealed} unsealed input(s).")
+    if unavailable:
+        print(f"{unavailable} store input(s) not checked: {STORE.reason}.")
+    if errors:
+        print(f"{errors} store input(s) could not be checked because the store is misconfigured.")
+    return 1 if drifted or unsealed or errors else 0
 
 
 def seal(root: Path, task_dir: str) -> int:
@@ -795,14 +1049,25 @@ def seal(root: Path, task_dir: str) -> int:
     in_inputs = False
     pending = None  # (input path, indent of its fields)
 
+    skipped = []
+
+    def sealed_value(rel, old):
+        """The digest to write, or the old value if the input cannot be read."""
+        nonlocal updated
+        new = digest(root, rel)
+        if new in ("unavailable", "error", "missing"):
+            skipped.append((rel, new))
+            print(f"  {rel} -> NOT SEALED ({new})")
+            return old
+        print(f"  {rel} -> {new}")
+        updated += 1
+        return new
+
     def flush():
-        nonlocal pending, updated
+        nonlocal pending
         if pending:
             rel, ind = pending
-            new = digest(root, rel)
-            out.append(f"{' ' * ind}digest: {new}")
-            print(f"  {rel} -> {new}")
-            updated += 1
+            out.append(f"{' ' * ind}digest: {sealed_value(rel, '')}".rstrip())
             pending = None
 
     for idx, line in enumerate(lines):
@@ -833,10 +1098,8 @@ def seal(root: Path, task_dir: str) -> int:
 
         if in_inputs and pending and stripped.startswith("digest:"):
             rel, _ = pending
-            new = digest(root, rel)
-            out.append(f"{' ' * indent}digest: {new}")
-            print(f"  {rel} -> {new}")
-            updated += 1
+            old = stripped.split(":", 1)[1].strip()
+            out.append(f"{' ' * indent}digest: {sealed_value(rel, old)}".rstrip())
             pending = None
             continue
 
@@ -844,6 +1107,11 @@ def seal(root: Path, task_dir: str) -> int:
 
     path.write_text("\n".join(out) + "\n", encoding="utf-8")
     print(f"sealed {updated} input digest(s) in {path}")
+    if skipped:
+        print(f"{len(skipped)} input(s) left unsealed; their previous digest, if any, was kept.")
+        if any(state == "unavailable" for _, state in skipped):
+            print(f"  {STORE.reason}")
+        return 1
     return 0
 
 
@@ -912,6 +1180,349 @@ def status(root: Path) -> int:
         if not derived.is_file() or derived.read_text(encoding="utf-8") != expected:
             print(f"  {DECISIONS_IN_FORCE} is out of date: run 'rlcheck.py decisions'")
     print(f"retrieval snapshots: {len(find_snapshots(root))}")
+    if STORE.state == "ok":
+        print(f"store: {STORE.id} at {STORE.path}")
+    elif STORE.state != "none":
+        print(f"store: {STORE.reason}; run 'rlcheck.py doctor'")
+    return 0
+
+
+# --------------------------------------------------------------------------
+# Setup: init, doctor, claude-settings, where
+# --------------------------------------------------------------------------
+
+SKELETON = {
+    "methodology/00-brief.md": (
+        "# Brief\n\n## As received (YYYY-MM-DD)\n\n## Agreed scope\n"
+        "**In scope.**\n**Out of scope.**\n**Deliverable.**\n\n## Amendments\n"
+    ),
+    "methodology/10-plan.md": (
+        "# Plan\n\n**Updated.** YYYY-MM-DD\n\n## Phases\n\n## Now\n\n## Next\n\n## Deferred\n"
+    ),
+    "methodology/20-decisions.md": "# Decisions\n",
+    "methodology/30-limitations.md": (
+        "# Limitations and gaps\n\n"
+        "| ID | Raised | Description | Affects | Status | Resolution |\n"
+        "|----|--------|-------------|---------|--------|------------|\n"
+    ),
+    "methodology/40-insights.md": "# Insights for the output\n",
+}
+SKELETON_DIRS = [TASKS_DIR, RETRIEVED_DIR]
+
+
+def _script_command() -> str:
+    return f'python "{Path(__file__).resolve()}"'
+
+
+def _parse_opts(args, spec):
+    """Tiny option parser: spec maps '--name' to True if it takes a value."""
+    opts = {}
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a not in spec:
+            raise ValueError(f"unknown option {a!r}")
+        if spec[a]:
+            if i + 1 >= len(args):
+                raise ValueError(f"option {a} needs a value")
+            opts[a] = args[i + 1]
+            i += 2
+        else:
+            opts[a] = True
+            i += 1
+    return opts
+
+
+def _gitignore_missing(root: Path):
+    path = root / ".gitignore"
+    have = set()
+    if path.is_file():
+        have = {line.strip() for line in path.read_text(encoding="utf-8").splitlines()}
+    return [line for line in GITIGNORE_LINES if line not in have]
+
+
+def _ensure_gitignore(root: Path):
+    missing = _gitignore_missing(root)
+    if not missing:
+        return []
+    path = root / ".gitignore"
+    text = path.read_text(encoding="utf-8") if path.is_file() else ""
+    if text and not text.endswith("\n"):
+        text += "\n"
+    text += "# research-log: machine-local files\n" + "".join(line + "\n" for line in missing)
+    path.write_text(text, encoding="utf-8")
+    return missing
+
+
+def _write_local_config(root: Path, store_path: Path):
+    (root / LOCAL_CONFIG).write_text(
+        "# Local to this machine; never commit this file.\n"
+        "# Where the shared store of this project is on this computer.\n"
+        f"[store]\npath = {store_path}\n",
+        encoding="utf-8",
+    )
+
+
+def init(root: Path, args) -> int:
+    try:
+        opts = _parse_opts(args, {"--id": True, "--store": True, "--adopt": False})
+    except ValueError as exc:
+        print(f"init: {exc}")
+        return 2
+    done = []
+
+    existing = Store(root).id
+    pid = opts.get("--id")
+    if existing and pid and pid != existing:
+        print(f"init: {CONFIG} already names this project '{existing}'; refusing to change it to '{pid}'")
+        return 1
+    if not existing:
+        if not pid:
+            print(f"init: this project has no {CONFIG} yet. Give it an id:")
+            print(f"      {_script_command()} init --id <project-id> [--store <path>]")
+            return 2
+        if not PROJECT_ID.match(pid):
+            print("init: the id must be 2-63 characters: lower-case letters, digits and hyphens")
+            return 2
+        (root / CONFIG).write_text(
+            "# research-log project configuration. Shared through git.\n"
+            f"# Each machine says where the store is in {LOCAL_CONFIG}, which is not in git.\n"
+            f"[store]\nid = {pid}\n",
+            encoding="utf-8",
+        )
+        done.append(f"wrote {CONFIG} (project id '{pid}')")
+    pid = existing or pid
+
+    for rel, content in SKELETON.items():
+        target = root / rel
+        if not target.exists():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content, encoding="utf-8")
+            done.append(f"created {rel}")
+    for rel in SKELETON_DIRS:
+        target = root / rel
+        if not target.exists():
+            target.mkdir(parents=True)
+            (target / ".gitkeep").write_text("", encoding="utf-8")
+            done.append(f"created {rel}/")
+
+    added = _ensure_gitignore(root)
+    if added:
+        done.append(f"added to .gitignore: {', '.join(added)}")
+
+    if "--store" in opts:
+        sp = Path(opts["--store"]).expanduser()
+        if not sp.is_absolute():
+            sp = (root / sp).resolve()
+        if sp.exists() and not sp.is_dir():
+            print(f"init: {sp} is a file, not a directory")
+            return 1
+        marker = read_marker(sp) if sp.is_dir() else None
+        if marker and marker != pid:
+            print(f"init: {sp} is the store of project '{marker}', not '{pid}'")
+            return 1
+        if marker is None:
+            if sp.is_dir() and any(sp.iterdir()) and "--adopt" not in opts:
+                print(f"init: {sp} is not empty and has no {STORE_MARKER}.")
+                print("      If this really is the store of this project, rerun with --adopt.")
+                return 1
+            sp.mkdir(parents=True, exist_ok=True)
+            (sp / STORE_MARKER).write_text(f"research-log store\nid: {pid}\n", encoding="utf-8")
+            done.append(f"marked {sp} as the store of '{pid}'")
+        for d in STORE_DIRS:
+            if not (sp / d).is_dir():
+                (sp / d).mkdir()
+                done.append(f"created store {d}/")
+        _write_local_config(root, sp)
+        done.append(f"wrote {LOCAL_CONFIG} (store at {sp})")
+
+    if done:
+        print("\n".join(f"  {line}" for line in done))
+    else:
+        print("  nothing to do; the setup files are in place")
+    print(f"next: {_script_command()} doctor")
+    return 0
+
+
+def _claude_settings_state(root: Path, store: Store):
+    """Return (has_store_access, has_hook, error) for the local Claude Code settings."""
+    path = root / CLAUDE_LOCAL_SETTINGS
+    if not path.is_file():
+        return False, False, None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except ValueError:
+        return False, False, f"{CLAUDE_LOCAL_SETTINGS} is not valid JSON"
+    dirs = (data.get("permissions") or {}).get("additionalDirectories") or []
+    access = bool(store.path) and any(Path(d).expanduser() == store.path for d in dirs if isinstance(d, str))
+    hook = any(
+        Path(__file__).name in (h.get("command") or "")
+        for entry in (data.get("hooks") or {}).get("SessionStart") or []
+        for h in entry.get("hooks") or []
+    )
+    return access, hook, None
+
+
+def doctor(root: Path) -> int:
+    problems = 0
+    cmd = _script_command()
+    uses_claude_code = (root / ".claude").is_dir()
+
+    def ok(msg):
+        print(f"OK    {msg}")
+
+    def fix(msg, how):
+        nonlocal problems
+        problems += 1
+        print(f"FIX   {msg}")
+        print(f"      -> {how}")
+
+    def note(msg, how=None):
+        print(f"NOTE  {msg}")
+        if how:
+            print(f"      -> {how}")
+
+    print(f"project: {root}\n")
+
+    # project basics
+    if any((p / ".git").exists() for p in [root, *root.parents]):
+        ok("git repository")
+    else:
+        fix("not a git repository; living documents have no history", "git init")
+
+    if (root / CONFIG).is_file() and STORE.id:
+        ok(f"{CONFIG} (project id '{STORE.id}')")
+    elif (root / CONFIG).is_file():
+        fix(f"{CONFIG} has no [store] id", f"{cmd} init --id <project-id>")
+    else:
+        fix(f"no {CONFIG}", f"{cmd} init --id <project-id> --store <path to the shared store>")
+
+    missing = [rel for rel in [*SKELETON, *SKELETON_DIRS] if not (root / rel).exists()]
+    if missing:
+        fix(f"missing project files: {', '.join(missing)}", f"{cmd} init")
+    else:
+        ok("methodology documents and task directories")
+
+    if (root / "PROFILE.md").is_file():
+        ok("PROFILE.md")
+    else:
+        fix("no PROFILE.md: the project layer is not written yet",
+            "write it together with Claude, following reference/project-profile.md")
+    if not (root / "README.md").is_file():
+        note("no README.md", "write the router from the template in reference/documents.md")
+
+    gi = _gitignore_missing(root)
+    if gi:
+        fix(f".gitignore does not exclude {', '.join(gi)}", f"{cmd} init")
+    else:
+        ok(".gitignore excludes machine-local files")
+
+    # store
+    if STORE.id:
+        if STORE.state == "ok":
+            ok(f"store '{STORE.id}' at {STORE.path}")
+            absent = [d for d in STORE_DIRS if not (STORE.path / d).is_dir()]
+            if absent:
+                fix(f"store lacks {', '.join(absent)}/", f'{cmd} init --store "{STORE.path}"')
+            inbox = STORE.path / STORE_INBOX
+            if inbox.is_dir():
+                waiting = [p for p in inbox.rglob("*") if p.is_file()]
+                if waiting:
+                    note(f"{len(waiting)} file(s) waiting in the inbox to be catalogued")
+        elif STORE.state == "unmapped":
+            fix(STORE.reason, f'{cmd} init --store "<path to the shared store on this computer>"')
+        elif STORE.state == "unreachable":
+            fix(STORE.reason, "sync or mount the shared folder, or point to where it is: "
+                f'{cmd} init --store "<path>"')
+        else:
+            fix(STORE.reason, f'{cmd} init --store "<path to the store of {STORE.id}>"')
+
+    # Claude Code
+    access, hook, err = _claude_settings_state(root, STORE)
+    report = fix if uses_claude_code else note
+    if err:
+        report(err, f"repair or delete it, then {cmd} claude-settings")
+    else:
+        if STORE.state == "ok":
+            if access:
+                ok("Claude Code may read the store")
+            else:
+                report("Claude Code has no access to the store", f"{cmd} claude-settings")
+        if hook:
+            ok("Claude Code session hook shows status on start, resume and compaction")
+        else:
+            report("no Claude Code session hook", f"{cmd} claude-settings")
+    if not uses_claude_code:
+        note("Claude.ai: give the Filesystem connector access to the project folder"
+             + (f" and to {STORE.path}" if STORE.path else " and to the store"))
+
+    print()
+    print("setup complete." if not problems else f"{problems} thing(s) to fix.")
+    return 1 if problems else 0
+
+
+def claude_settings(root: Path) -> int:
+    path = root / CLAUDE_LOCAL_SETTINGS
+    data = {}
+    if path.is_file():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except ValueError:
+            print(f"FAIL {CLAUDE_LOCAL_SETTINGS} is not valid JSON; repair or delete it first")
+            return 1
+    done = []
+
+    perms = data.setdefault("permissions", {})
+    if STORE.usable:
+        dirs = perms.setdefault("additionalDirectories", [])
+        if not any(isinstance(d, str) and Path(d).expanduser() == STORE.path for d in dirs):
+            dirs.append(str(STORE.path))
+            done.append(f"store access: {STORE.path}")
+        deny = perms.setdefault("deny", [])
+        posix = STORE.path.as_posix().lstrip("/")
+        for tool in ("Edit", "Write"):
+            rule = f"{tool}(//{posix}/sources/**)"
+            if rule not in deny:
+                deny.append(rule)
+                done.append(f"deny rule: {rule}")
+    else:
+        print(f"note: {STORE.reason}; store access not configured")
+    if not perms:
+        del data["permissions"]
+
+    session = data.setdefault("hooks", {}).setdefault("SessionStart", [])
+    has_hook = any(Path(__file__).name in (h.get("command") or "")
+                   for entry in session for h in entry.get("hooks") or [])
+    if not has_hook:
+        py = Path(sys.executable).as_posix()
+        script = Path(__file__).resolve().as_posix()
+        session.append({"hooks": [{
+            "type": "command",
+            "command": f'cd "$CLAUDE_PROJECT_DIR" && "{py}" "{script}" status',
+        }]})
+        done.append("SessionStart hook: rlcheck status")
+
+    if not done:
+        print(f"{CLAUDE_LOCAL_SETTINGS} already up to date")
+        return 0
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    _ensure_gitignore(root)
+    print(f"updated {CLAUDE_LOCAL_SETTINGS}:")
+    print("\n".join(f"  {line}" for line in done))
+    print("Takes effect in the next Claude Code session; check it there with /permissions and /hooks.")
+    return 0
+
+
+def where(root: Path, rel: str) -> int:
+    state, target, reason = resolve(root, rel)
+    if state != "ok":
+        print(f"{rel}: {reason}")
+        return 1
+    print(target)
+    if not target.exists():
+        print("(does not exist)")
+        return 1
     return 0
 
 
@@ -925,8 +1536,29 @@ def main(argv):
     if len(argv) < 2:
         print(__doc__)
         return 2
+    global STORE, CACHE
     command = argv[1]
     root = Path.cwd()
+    STORE = Store(root)
+    CACHE = DigestCache(root)
+    try:
+        return _dispatch(command, root, argv)
+    finally:
+        CACHE.save()
+
+
+def _dispatch(command, root, argv):
+    if command == "doctor":
+        return doctor(root)
+    if command == "init":
+        return init(root, argv[2:])
+    if command == "claude-settings":
+        return claude_settings(root)
+    if command == "where":
+        if len(argv) < 3:
+            print("usage: rlcheck.py where store:<path>")
+            return 2
+        return where(root, argv[2])
 
     if command == "validate":
         return validate(root)

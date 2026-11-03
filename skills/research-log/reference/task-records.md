@@ -18,7 +18,7 @@ opened: 2026-08-20
 checkpoint:
 closed:
 inputs:
-  - path: sources/policy/eu
+  - path: store:sources/policy/eu
     digest:
   - path: methodology/00-brief.md
     digest:
@@ -124,6 +124,24 @@ and contents of everything inside it, so adding one PDF to a source folder is
 detected. An input without a `digest:` line gets one. Only the `inputs` block is
 touched.
 
+## Paths
+
+A path is either relative to the project root (`methodology/00-brief.md`,
+`tasks/t0006-eu-search/results.csv`) or a store path (`store:sources/eu`,
+`store:exports/report.pdf`). Never write a machine's own path into a record:
+it is wrong on every other computer.
+
+- Inputs may come from the repository or from `store:sources/`, never from
+  `store:inbox/`. A file in the inbox enters the record when a cataloguing task
+  moves it to `store:sources/` and lists it among its outputs.
+- Outputs are text in the task directory. The only outputs in the store are
+  catalogued sources (`store:sources/`) and final binary exports
+  (`store:exports/`).
+
+On a machine where the store is not available, `seal` cannot read store inputs.
+It keeps their previous digest, says so and exits non-zero. Seal on a machine
+that has the store before closing the task.
+
 ## Method as executed, not as planned
 
 The section most often written wrong. If the plan said three databases and you
@@ -151,12 +169,16 @@ A handoff that is out of date is worse than none, because it is believed.
 
 | Status | Checked |
 |---|---|
-| any | front matter parses; required keys present; id unique; inputs exist; all six sections present; `## Question` filled with no placeholder |
+| any | front matter parses; required keys present; id unique; inputs exist and none is in the inbox; all six sections present; `## Question` filled with no placeholder |
 | `planned`, `in-progress` | missing outputs are warnings |
 | `in-progress` | `## Handoff` filled with no placeholder; `checkpoint` set to an ISO date or date-time |
 | `complete` | `closed` set; no section empty; no placeholder anywhere; every output exists; `decisions`, `limitations`, `retrievals` declared and resolvable |
 
 `superseded` records are checked only for structure.
+
+Store paths that cannot be reached on this machine are reported as not checked,
+not as failures. A store that is reachable but is not this project's store (its
+marker names another project) is a failure.
 
 ## Commands
 

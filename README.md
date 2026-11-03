@@ -11,13 +11,13 @@ costs nothing and context is never silently lost to compaction.
 ## Contents
 
 - `skills/research-log/` — the general skill: file classes, document set,
-  task-record schema, closing gate, staleness handling.
+  task-record schema, closing gate, staleness handling, project setup.
   - `SKILL.md` — the skill itself
   - `reference/documents.md` — the methodology documents and their templates
   - `reference/task-records.md` — task record format and the dependency schema
   - `reference/retrievals.md` — snapshots of search and tool results
   - `reference/project-profile.md` — how to write the per-project layer
-  - `scripts/rlcheck.py` — validation, staleness and derived views, zero dependencies
+  - `scripts/rlcheck.py` — setup, validation, staleness and derived views, zero dependencies
 
 ## Design
 
@@ -29,10 +29,20 @@ vocabulary, deliverable. Nothing project-specific ever enters the skill.
 the class determines how it may be changed. Most context loss comes from
 treating a living document as a historical record, or the reverse.
 
+**The record in git, the large files in a store.** The class also decides what
+is versioned. Living and append-only documents must be in git, because git is
+their history; derived work is kept as text and is in git too. Large frozen
+sources — 200-page PDFs, big exports — and final binary exports live in a shared
+store outside the repository. Records refer to them as `store:<path>` with a
+digest, so the record in git fixes which version was used even though the file
+is not in git. Each machine says where the store is in an uncommitted local
+config.
+
 **Staleness is a build problem, not a prompt problem.** Task records declare
 their inputs with digests. When a source set grows or the brief is amended,
 `rlcheck.py stale` names the affected records. The model is never asked to work
-this out by reading.
+this out by reading. On a machine without the store, store inputs are reported
+as not checked, not as changed.
 
 **Nothing lives only in the conversation.** Results from web search, databases
 and connectors are saved as dated, frozen snapshots with the exact query, at the
@@ -56,19 +66,56 @@ form: no empty sections or template text in a complete record, every output
 present, every cited decision, limitation and snapshot resolvable, derived files
 up to date. It exits non-zero on any failure and can run as a pre-commit hook.
 
-## Use
+**Setup is guided.** `rlcheck.py doctor` checks every part of the setup on the
+current machine and prints the command that fixes each gap. The skill tells the
+model to run it first and walk the user through it, so a new project, or an
+existing one on a new computer, is set up in the conversation.
+
+## Install the skill
 
 **Claude Code (intended).** Copy `skills/research-log/` into `~/.claude/skills/`
 or into the project's `.claude/skills/`. Start Claude Code in the research
 project's root; the model runs the checks itself.
 
 **Claude.ai.** Zip the `research-log` folder and upload it under
-Settings → Skills (requires code execution enabled). Keep each research
-project's `PROFILE.md` either on disk, read through the Filesystem connector at
-the start of a session, or as the instructions of a Claude Project. The
-Filesystem connector cannot execute anything on your machine, so the model will
-ask you to run `rlcheck` and paste the output; keep a terminal open in the
-project.
+Settings → Skills (requires code execution enabled). Give the Filesystem
+connector access to the project folder and to the store. The connector cannot
+execute anything on your machine, so the model will ask you to run `rlcheck`
+and paste the output; keep a terminal open in the project.
+
+## Set up a research project
+
+Ask Claude to set the project up; it runs `doctor` and guides you. By hand, from
+the research project's root:
+
+```
+python <skill-dir>/scripts/rlcheck.py doctor
+python <skill-dir>/scripts/rlcheck.py init --id open-science-2026 --store "C:\Users\me\OneDrive - Org\Research\open-science-2026"
+python <skill-dir>/scripts/rlcheck.py claude-settings
+```
+
+`init` writes `research-log.ini` (the project id, in git), the methodology
+skeleton, `.gitignore` entries, the store layout and its marker, and
+`research-log.local.ini` (this machine's store path, not in git). On another
+computer, after cloning, only the store path is needed:
+
+```
+python <skill-dir>/scripts/rlcheck.py init --store "D:\Sync\Research\open-science-2026"
+```
+
+`init` checks the marker in the store, so it refuses a folder that belongs to a
+different project, and refuses a non-empty folder without a marker unless given
+`--adopt`.
+
+`claude-settings` writes `.claude/settings.local.json` for Claude Code on this
+machine: the store as an additional directory, deny rules against editing
+`sources/` in the store, and the session hook described below. Check it in the
+next Claude Code session with `/permissions` and `/hooks`. The deny rules are a
+guard against accidental edits, not a guarantee — they do not cover shell
+commands. The digests in the records are what detects a changed source.
+
+`PROFILE.md`, the brief and the README are written with Claude, following
+`reference/project-profile.md` and `reference/documents.md`.
 
 ## Commands
 
@@ -76,6 +123,10 @@ Always run from the research project's root; the script works on the current
 directory, wherever it is installed.
 
 ```
+python <skill-dir>/scripts/rlcheck.py doctor
+python <skill-dir>/scripts/rlcheck.py init [--id ID] [--store PATH] [--adopt]
+python <skill-dir>/scripts/rlcheck.py claude-settings
+python <skill-dir>/scripts/rlcheck.py where store:sources/eu/regulation-2024.pdf
 python <skill-dir>/scripts/rlcheck.py status
 python <skill-dir>/scripts/rlcheck.py validate
 python <skill-dir>/scripts/rlcheck.py stale
@@ -89,6 +140,21 @@ python <skill-dir>/scripts/rlcheck.py retrieval wos-open-science
 `.claude/skills/research-log`, or `skills/research-log` in a clone of this
 repository.
 
+## What is in git
+
+In a research project, everything in the repository is committed except three
+machine-local files, which `init` adds to `.gitignore`:
+
+| File | Why it stays local |
+|---|---|
+| `research-log.local.ini` | the store's path differs on every computer |
+| `.rlcheck-cache.json` | cache of file digests, so cloud-synced files are not re-read on every check |
+| `.claude/settings.local.json` | Claude Code access and hook, with this machine's paths |
+
+The store is outside the repository and needs no ignore rule. Its backup and
+version history come from the shared storage it lives on (OneDrive, SharePoint,
+a network drive), not from git.
+
 ## Pre-commit hook
 
 If the research project is a git repository with its root at the project root,
@@ -100,15 +166,17 @@ python "$HOME/.claude/skills/research-log/scripts/rlcheck.py" check
 ```
 
 A commit is refused while any record is incomplete or stale, a snapshot is
-undocumented, or the decisions view is out of date.
+undocumented, or the decisions view is out of date. On a machine without the
+store, store inputs are skipped, so the hook does not block commits there.
 
 ## Session hook (Claude Code)
 
 A `SessionStart` hook puts `rlcheck status` in front of the model whenever a
 session starts, resumes, is cleared or has just been compacted. For an
 in-progress task, `status` prints its checkpoint and handoff together with an
-instruction to read the record before continuing. In the research project's
-`.claude/settings.json`:
+instruction to read the record before continuing. `rlcheck claude-settings`
+installs it in `.claude/settings.local.json` with this machine's paths. Written
+by hand, it looks like this:
 
 ```json
 {
@@ -126,9 +194,6 @@ instruction to read the record before continuing. In the research project's
   }
 }
 ```
-
-Adjust the script path if the skill is installed in the project's
-`.claude/skills/` instead.
 
 The hook can only restore what is already on disk. There is deliberately no
 `PreCompact` hook: it runs before compaction but cannot make the model write

@@ -50,6 +50,13 @@ truncated response, a paywall), say so in the manifest.
 If a search returned nothing, that is a result: set `results: 0` and the
 directory may contain only the manifest.
 
+If the results are too large for the repository (a full database export of
+hundreds of megabytes), put them in the store under a directory with the same
+name, `store:retrieved/2026-09-05-wos-open-science/`, and add
+`data: store:retrieved/2026-09-05-wos-open-science` to the manifest. The manifest
+stays in the repository. The task then lists both the snapshot directory and the
+`data` path among its inputs, so both are digested.
+
 ## Manifest: retrieval.md
 
 ````markdown
@@ -82,6 +89,7 @@ TS=("open science" OR "open data") AND PY=(2015-2026)
 | `results` | the number of hits the source reported, or `n/a` if it reports none |
 | `captured` | `full` if everything returned was saved, `partial` otherwise |
 | `task` | the task that made the retrieval |
+| `data` | optional: a store path holding results too large for the repository |
 
 The exact query goes in `## Query`, in a code block, verbatim — with filters,
 date limits and any parameters set in the interface. It is not in the front
@@ -95,10 +103,12 @@ For every directory under `sources/retrieved/`: the manifest exists and parses;
 `tool`, `source`, `retrieved`, `results` and `captured` are filled; `captured`
 is `full` or `partial`; `## Query` is not empty; a partial snapshot says what is
 missing; no template text is left; and there is at least one result file unless
-`results: 0`.
+`results: 0` — in the snapshot directory, or in the `data` directory when the
+manifest names one and the store is reachable.
 
 For every complete task record: each snapshot listed under `retrievals` exists
-and is covered by `inputs`, so that `stale` notices if a snapshot is changed.
+and is covered by `inputs`, and so is its `data` path if it has one, so that
+`stale` notices if a snapshot is changed.
 
 ## Rules
 

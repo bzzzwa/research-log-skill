@@ -1,6 +1,6 @@
 ---
 name: research-log
-description: Keep the methodology log and task records of a social-science desk-research project complete enough that any phase can be resumed in a fresh conversation with no loss of context. Use whenever working inside a research project directory that contains PROFILE.md or a methodology/ folder; when opening, closing or resuming a research task; when asked to record a methodological decision, log a limitation or caveat, update the plan, capture an observation for the final output, save or snapshot search results from a database, website or tool, check deviations from the brief, check whether outputs have gone stale, or set up a new research project directory. Also use when the user says they are starting a new session, continuing earlier work, or asks what state the project is in, and after the context has been compacted while a research task is open.
+description: Keep the methodology log and task records of a social-science desk-research project complete enough that any phase can be resumed in a fresh conversation with no loss of context. Use whenever working inside a research project directory that contains PROFILE.md or a methodology/ folder; when opening, closing or resuming a research task; when asked to record a methodological decision, log a limitation or caveat, update the plan, capture an observation for the final output, save or snapshot search results from a database, website or tool, check deviations from the brief, check whether outputs have gone stale, or set up a new research project directory or an existing project on another computer. Also use when the user says they are starting a new session, continuing earlier work, or asks what state the project is in, and after the context has been compacted while a research task is open.
 ---
 
 # Research Log
@@ -22,7 +22,7 @@ is the same for every project.
 `PROFILE.md` in the project root is the project layer: what the source types
 are, how they are processed, what counts as a task, what the delivery format is.
 It differs for every project. **Always read `PROFILE.md` before acting.** If it
-is missing, create it with the user (see `reference/project-profile.md`).
+is missing, the project is not set up yet: see *Setting up a project*.
 
 Never put project-specific rules in this skill, and never put general rules in
 `PROFILE.md`.
@@ -55,6 +55,10 @@ Never say a check passed unless you have seen its output in this session.
 
 | Command | What it answers |
 |---|---|
+| `rlcheck doctor` | is this project set up on this machine, and what to fix if not |
+| `rlcheck init ...` | create or complete the setup (see *Setting up a project*) |
+| `rlcheck claude-settings` | give Claude Code access to the store and install the session hook |
+| `rlcheck where store:<path>` | where a store path is on this machine |
 | `rlcheck status` | state of the project, for the start of a session |
 | `rlcheck validate` | are records, logs and snapshots complete and consistent? |
 | `rlcheck stale` | which records depend on inputs that have changed? |
@@ -63,6 +67,78 @@ Never say a check passed unless you have seen its output in this session.
 | `rlcheck decisions` | regenerate `methodology/25-decisions-in-force.md` |
 | `rlcheck retrieval <slug>` | create a dated snapshot directory for tool results |
 
+## Setting up a project
+
+When this skill is loaded in a directory that is meant to be a research project,
+run `rlcheck doctor` before anything else, and again whenever the user starts
+work on a machine they have not used for this project. It lists every part of
+the setup as `OK`, `FIX` (with the command that fixes it) or `NOTE`. Walk the
+user through the `FIX` items one at a time, in the order printed, and run
+`doctor` again at the end. Setup is finished when it prints `setup complete.`
+
+The parts, and what you need from the user for each:
+
+1. **Git repository.** If there is none, ask before running `git init`.
+2. **Project id and store.** Ask for a short id (lower-case, hyphens) and where
+   the shared store is on this computer — the synced OneDrive, SharePoint or
+   network folder that holds the large files. Then
+   `rlcheck init --id <id> --store "<path>"`. On a second machine the id is
+   already in `research-log.ini`; only `rlcheck init --store "<path>"` is needed.
+   If the folder already contains files but no store marker, `init` refuses;
+   rerun with `--adopt` only after the user confirms it is the right folder.
+3. **Access for Claude.** In Claude Code, run `rlcheck claude-settings` after
+   the user agrees: it adds the store to Claude Code's allowed directories,
+   protects `sources/` in the store from edits, and installs the session hook.
+   Tell the user it takes effect in the next Claude Code session. In Claude.ai,
+   ask the user to give the Filesystem connector access to both the project
+   folder and the store.
+4. **PROFILE.md.** Write it with the user, following
+   `reference/project-profile.md`. Ask about one section at a time; do not
+   invent source types or task types.
+5. **The brief and the README.** Put the assignment verbatim into
+   `methodology/00-brief.md` and write `README.md` from the template in
+   `reference/documents.md`.
+
+Each step changes the user's files or settings: say what the command will do
+before running it. Where you cannot run commands, give them to the user as
+described in *Running the checks*.
+
+## The store
+
+Large files — full-text PDFs, big exports, final binary exports — live outside
+the repository in a shared store, because they do not belong in git and the
+project is worked on from several machines. Everything else is text and lives in
+the repository.
+
+Records refer to store files as `store:<path>`, never by a machine's own path:
+`store:sources/eu/regulation-2024.pdf`. Each machine maps the store to a local
+folder in `research-log.local.ini`, which is not in git. To open a store file,
+run `rlcheck where store:<path>` to get its location on this machine; where you
+cannot run it, read the path from `research-log.local.ini`.
+
+```
+<store>/
+  .research-store        marker naming the project; never edit
+  inbox/                 new documents, not yet catalogued
+  sources/               catalogued sources, frozen
+  retrieved/             retrieval results too large for the repository (optional)
+  exports/               final binary exports of the deliverable
+```
+
+**The inbox is outside the record.** Files arrive there from downloads, scripts
+or the user. Nothing in `inbox/` may be a task input; `validate` fails if one
+is. A file enters the record when a task catalogues it: the task moves it to
+`sources/`, lists it among its outputs and records what was done with it.
+
+**Store sources are frozen.** Git cannot protect them; the digests in task
+records can. If a store source has to change, treat it like any frozen file:
+log the change and run `rlcheck stale`.
+
+**On a machine without the store**, store paths cannot be read. `validate` and
+`stale` report them as not checked rather than failing, and `seal` keeps the
+previous digest rather than writing a wrong one. Do not close a task whose
+inputs could not be sealed.
+
 ## File classes
 
 Every file in the project belongs to exactly one class. The class determines how
@@ -70,10 +146,15 @@ it may be changed. Getting this wrong is the main source of lost context.
 
 | Class | Rule | Examples |
 |---|---|---|
-| **frozen** | Written once. Any change is an event that is logged and invalidates downstream work. | `methodology/00-brief.md`, received primary materials, `sources/`, retrieval snapshots |
+| **frozen** | Written once. Any change is an event that is logged and invalidates downstream work. | `methodology/00-brief.md`, retrieval snapshots, `store:sources/` |
 | **living** | Rewritten in place to state what is true *now*. Git holds the history; the file does not. | `README.md`, `methodology/10-plan.md`, `methodology/30-limitations.md` |
 | **append-only** | New entries are added at the end. Existing entries are never edited or deleted. | `methodology/20-decisions.md`, `methodology/40-insights.md` |
 | **derived** | Regenerated from other files. Never hand-edited. | `methodology/25-decisions-in-force.md`, `methodology/90-deviations.md`, task outputs |
+
+The class also decides what is in git. Living and append-only files must be,
+because git is their history. Derived files are kept as text and are in git
+too; only final binary exports go to `store:exports/`. Frozen files may be in
+the store, because the digest in the record is what fixes their version.
 
 Full layout, contents and templates: `reference/documents.md`.
 
@@ -82,6 +163,8 @@ Full layout, contents and templates: `reference/documents.md`.
 ```
 README.md                     living    router: what this project is, where things are, current state
 PROFILE.md                    living    the project layer (source types, task types, delivery)
+research-log.ini                        project id; shared through git
+research-log.local.ini                  where the store is on this machine; not in git
 methodology/
   00-brief.md                 frozen    the assignment, verbatim, plus agreed scope
   10-plan.md                  living    current plan and what comes next
@@ -94,10 +177,12 @@ tasks/
   t0001-<slug>/
     record.md                          the task record (schema in reference/task-records.md)
     <outputs>
-sources/                      frozen    per PROFILE.md
-  retrieved/
+sources/
+  retrieved/                  frozen
     YYYY-MM-DD-<slug>/                 snapshot of one tool retrieval (reference/retrievals.md)
 ```
+
+The store has its own layout, described under *The store*.
 
 Numbers leave gaps of ten so documents can be inserted without renumbering.
 
@@ -235,7 +320,8 @@ This is a mechanical dependency question and must not be answered by reading and
 guessing. Run `rlcheck stale`.
 
 It compares recorded input digests against current ones and names the affected
-records. Then, for each one: decide with the user whether to rerun it or accept
+records: `STALE` when an input changed, `MISSING` when it is gone. Then, for each
+one: decide with the user whether to rerun it or accept
 it, log that decision in `20-decisions.md`, and either rerun and reseal, or set
 `status: superseded` and open a replacement task.
 

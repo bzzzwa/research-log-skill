@@ -25,7 +25,9 @@ go. Rewritten whenever the structure or the phase changes.
 ## Where things are
 - `methodology/` — how this research is being done and why
 - `tasks/` — one directory per completed unit of work
-- `sources/` — <per PROFILE.md>; tool results as dated snapshots in `sources/retrieved/`
+- `sources/retrieved/` — dated snapshots of search and tool results
+- the store (`store:`, located per machine in `research-log.local.ini`) —
+  inbox, catalogued sources and final exports; see PROFILE.md for what is where
 - `PROFILE.md` — source types and conventions specific to this project
 
 ## State
@@ -34,7 +36,7 @@ go. Rewritten whenever the structure or the phase changes.
 ## Starting a session
 Read `PROFILE.md`, `methodology/10-plan.md` and
 `methodology/25-decisions-in-force.md`, then the record named as next.
-Run `rlcheck status` from this directory.
+Run `rlcheck status` from this directory; on a new computer, `rlcheck doctor`.
 ```
 
 ---
