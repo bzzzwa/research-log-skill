@@ -15,8 +15,9 @@ in research-log.local.ini.
 
 Usage:
     python rlcheck.py doctor               check the setup and say how to fix it
-    python rlcheck.py init [--id ID] [--store PATH] [--adopt]
+    python rlcheck.py init [--id ID] [--store PATH] [--adopt] [--update-tool]
                                            create or complete the project setup
+    python rlcheck.py version              print the version of this copy
     python rlcheck.py claude-settings      write .claude/settings.local.json for Claude Code
     python rlcheck.py where store:<path>   show where a store path is on this machine
     python rlcheck.py status               state for a new session; handoff of open tasks
@@ -38,8 +39,11 @@ import datetime as _dt
 import hashlib
 import json
 import re
+import shutil
 import sys
 from pathlib import Path
+
+__version__ = "2026.11.3"
 
 RECORD_NAME = "record.md"
 TASKS_DIR = "tasks"
@@ -55,9 +59,12 @@ CACHE_FILE = ".rlcheck-cache.json"
 CLAUDE_LOCAL_SETTINGS = ".claude/settings.local.json"
 STORE_PREFIX = "store:"
 STORE_MARKER = ".research-store"
-STORE_DIRS = ["inbox", "sources", "exports"]
+STORE_DIRS = ["inbox", "sources", "sources/brief", "exports"]
 STORE_INBOX = "inbox"
 GITIGNORE_LINES = [LOCAL_CONFIG, CACHE_FILE, CLAUDE_LOCAL_SETTINGS]
+GITATTRIBUTES_LINE = "* text=auto eol=lf"
+TOOL_COPY = "tools/rlcheck.py"
+CACHE_VERSION = 2
 PROJECT_ID = re.compile(r"^[a-z0-9][a-z0-9-]{1,62}$")
 
 REQUIRED_KEYS = ["id", "title", "status", "opened", "inputs", "outputs"]
@@ -403,11 +410,39 @@ def resolve(root: Path, rel: str):
     return "ok", store.path / inner, ""
 
 
+def _sha256_file(path: Path) -> str:
+    """SHA-256 of a file, independent of line endings for text files.
+
+    A file whose first 8 KiB contain no NUL byte is treated as text and
+    hashed with CRLF normalised to LF. Git on Windows rewrites line endings
+    on checkout, so without this the same document would have a different
+    digest on every machine and every record would look stale.
+    """
+    h = hashlib.sha256()
+    with path.open("rb") as fh:
+        chunk = fh.read(8192)
+        text = b"\0" not in chunk
+        carry = b""
+        while chunk:
+            if text:
+                chunk = carry + chunk
+                carry = b""
+                if chunk.endswith(b"\r"):
+                    carry, chunk = b"\r", chunk[:-1]
+                chunk = chunk.replace(b"\r\n", b"\n")
+            h.update(chunk)
+            chunk = fh.read(65536)
+        h.update(carry)
+    return h.hexdigest()
+
+
 class DigestCache:
     """Per-machine cache of file hashes keyed by path, size and mtime.
 
     Store files are often cloud placeholders that are downloaded on read;
-    the cache keeps a repeated stale check from reading them again.
+    the cache keeps a repeated stale check from reading them again. The
+    cache is versioned so that a change in how digests are computed never
+    returns an old value.
     """
 
     def __init__(self, root: Path):
@@ -415,7 +450,9 @@ class DigestCache:
         self.data = {}
         self.dirty = False
         try:
-            self.data = json.loads(self.file.read_text(encoding="utf-8"))
+            raw = json.loads(self.file.read_text(encoding="utf-8"))
+            if isinstance(raw, dict) and raw.get("version") == CACHE_VERSION:
+                self.data = raw.get("files") or {}
         except (OSError, ValueError):
             self.data = {}
 
@@ -425,11 +462,7 @@ class DigestCache:
         hit = self.data.get(key)
         if hit and hit.get("size") == st.st_size and hit.get("mtime") == st.st_mtime_ns:
             return hit["sha256"]
-        h = hashlib.sha256()
-        with path.open("rb") as fh:
-            for chunk in iter(lambda: fh.read(65536), b""):
-                h.update(chunk)
-        value = h.hexdigest()
+        value = _sha256_file(path)
         self.data[key] = {"size": st.st_size, "mtime": st.st_mtime_ns, "sha256": value}
         self.dirty = True
         return value
@@ -437,7 +470,8 @@ class DigestCache:
     def save(self):
         if self.dirty:
             try:
-                self.file.write_text(json.dumps(self.data, indent=0, sort_keys=True), encoding="utf-8")
+                payload = {"version": CACHE_VERSION, "files": self.data}
+                self.file.write_text(json.dumps(payload, indent=0, sort_keys=True), encoding="utf-8")
             except OSError:
                 pass
 
@@ -448,11 +482,7 @@ CACHE = None  # set in main()
 def _hash_file(path: Path) -> str:
     if CACHE is not None:
         return CACHE.hash(path)
-    h = hashlib.sha256()
-    with path.open("rb") as fh:
-        for chunk in iter(lambda: fh.read(65536), b""):
-            h.update(chunk)
-    return h.hexdigest()
+    return _sha256_file(path)
 
 
 UNAVAILABLE = ("unmapped", "unreachable")
@@ -1180,6 +1210,7 @@ def status(root: Path) -> int:
         if not derived.is_file() or derived.read_text(encoding="utf-8") != expected:
             print(f"  {DECISIONS_IN_FORCE} is out of date: run 'rlcheck.py decisions'")
     print(f"retrieval snapshots: {len(find_snapshots(root))}")
+    print(f"rlcheck: {__version__}")
     if STORE.state == "ok":
         print(f"store: {STORE.id} at {STORE.path}")
     elif STORE.state != "none":
@@ -1254,6 +1285,49 @@ def _ensure_gitignore(root: Path):
     return missing
 
 
+def _gitattributes_ok(root: Path) -> bool:
+    path = root / ".gitattributes"
+    if not path.is_file():
+        return False
+    return GITATTRIBUTES_LINE in {line.strip() for line in path.read_text(encoding="utf-8").splitlines()}
+
+
+def _ensure_gitattributes(root: Path) -> bool:
+    if _gitattributes_ok(root):
+        return False
+    path = root / ".gitattributes"
+    text = path.read_text(encoding="utf-8") if path.is_file() else ""
+    if text and not text.endswith("\n"):
+        text += "\n"
+    text += ("# research-log: store text with LF everywhere, so that records,\n"
+             "# diffs and digests are the same on every machine\n"
+             f"{GITATTRIBUTES_LINE}\n")
+    path.write_text(text, encoding="utf-8")
+    return True
+
+
+def _version_of(path: Path):
+    """The __version__ declared in a copy of rlcheck.py, or None."""
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.startswith("__version__"):
+                return line.split("=", 1)[1].strip().strip("\"'")
+    except OSError:
+        pass
+    return None
+
+
+def _project_tool(root: Path) -> Path:
+    """The copy of rlcheck the project uses: its own if it has one."""
+    copy = root / TOOL_COPY
+    return copy.resolve() if copy.is_file() else Path(__file__).resolve()
+
+
+def _uses_claude_code(root: Path) -> bool:
+    claude = root / ".claude"
+    return (claude / "settings.json").is_file() or (claude / "settings.local.json").is_file()
+
+
 def _read_local(root: Path):
     """All values of research-log.local.ini as {(section, key): value}."""
     path = root / LOCAL_CONFIG
@@ -1289,10 +1363,10 @@ def _write_local(root: Path, vals):
     (root / LOCAL_CONFIG).write_text("\n".join(lines), encoding="utf-8")
 
 
-def _this_tool():
+def _this_tool(root: Path):
     return {
         ("tools", "python"): str(Path(sys.executable).resolve()),
-        ("tools", "rlcheck"): str(Path(__file__).resolve()),
+        ("tools", "rlcheck"): str(_project_tool(root)),
     }
 
 
@@ -1309,7 +1383,7 @@ Give the user the command to run instead."""
 
 def init(root: Path, args) -> int:
     try:
-        opts = _parse_opts(args, {"--id": True, "--store": True, "--adopt": False})
+        opts = _parse_opts(args, {"--id": True, "--store": True, "--adopt": False, "--update-tool": False})
     except ValueError as exc:
         print(f"init: {exc}")
         return 2
@@ -1353,6 +1427,24 @@ def init(root: Path, args) -> int:
     added = _ensure_gitignore(root)
     if added:
         done.append(f"added to .gitignore: {', '.join(added)}")
+    if _ensure_gitattributes(root):
+        done.append(f"added to .gitattributes: {GITATTRIBUTES_LINE}")
+
+    here = Path(__file__).resolve()
+    copy = root / TOOL_COPY
+    if not copy.exists():
+        copy.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(here, copy)
+        done.append(f"copied rlcheck {__version__} to {TOOL_COPY} (versioned with the project)")
+    elif copy.resolve() != here:
+        old = _version_of(copy)
+        if "--update-tool" in opts:
+            shutil.copy2(here, copy)
+            done.append(f"updated {TOOL_COPY} from {old} to {__version__}; log this in "
+                        f"{DECISIONS_LOG}, then run check and reseal what it reports")
+        elif old != __version__:
+            done.append(f"note: {TOOL_COPY} is {old}, this is {__version__}; "
+                        "rerun with --update-tool to replace it")
 
     if "--store" in opts:
         sp = Path(opts["--store"]).expanduser()
@@ -1375,13 +1467,13 @@ def init(root: Path, args) -> int:
             done.append(f"marked {sp} as the store of '{pid}'")
         for d in STORE_DIRS:
             if not (sp / d).is_dir():
-                (sp / d).mkdir()
+                (sp / d).mkdir(parents=True)
                 done.append(f"created store {d}/")
     else:
         sp = None
 
     local = _read_local(root)
-    want = _this_tool()
+    want = _this_tool(root)
     if sp is not None:
         want[("store", "path")] = str(sp)
     changed = [k for k, v in want.items() if local.get(k) != v]
@@ -1397,7 +1489,8 @@ def init(root: Path, args) -> int:
         print("\n".join(f"  {line}" for line in done))
     else:
         print("  nothing to do; the setup files are in place")
-    print(f"next: {_script_command()} doctor")
+    print(f"next: python {TOOL_COPY} doctor" if (root / TOOL_COPY).is_file()
+          else f"next: {_script_command()} doctor")
     return 0
 
 
@@ -1423,7 +1516,7 @@ def _claude_settings_state(root: Path, store: Store):
 def doctor(root: Path) -> int:
     problems = 0
     cmd = _script_command()
-    uses_claude_code = (root / ".claude").is_dir()
+    uses_claude_code = _uses_claude_code(root)
 
     def ok(msg):
         print(f"OK    {msg}")
@@ -1439,7 +1532,8 @@ def doctor(root: Path) -> int:
         if how:
             print(f"      -> {how}")
 
-    print(f"project: {root}\n")
+    print(f"project: {root}")
+    print(f"rlcheck: {__version__} ({Path(__file__).resolve()})\n")
     if not is_project_root(root):
         note("this folder is not a research-log project yet",
              "if it should be, set it up with init; otherwise run doctor from the project root")
@@ -1477,8 +1571,26 @@ def doctor(root: Path) -> int:
     else:
         ok(".gitignore excludes machine-local files")
 
+    if _gitattributes_ok(root):
+        ok(".gitattributes keeps text files in LF")
+    else:
+        fix(".gitattributes does not fix line endings; digests may differ between machines",
+            f"{cmd} init")
+
+    copy = root / TOOL_COPY
+    if not copy.is_file():
+        fix(f"no {TOOL_COPY}: the project has no copy of rlcheck of its own", f"{cmd} init")
+    else:
+        copy_version = _version_of(copy)
+        if copy.resolve() == Path(__file__).resolve() or copy_version == __version__:
+            ok(f"{TOOL_COPY} {copy_version}")
+        else:
+            note(f"{TOOL_COPY} is {copy_version}, this copy of rlcheck is {__version__}",
+                 f"to change the project's version: {cmd} init --update-tool, "
+                 f"then log it in {DECISIONS_LOG}")
+
     recorded = _read_local(root).get(("tools", "rlcheck"))
-    here = Path(__file__).resolve()
+    here = _project_tool(root)
     if not recorded:
         fix("where rlcheck is on this machine is not recorded, so Claude cannot give you"
             " commands when it cannot run them itself", f"{cmd} init")
@@ -1568,7 +1680,7 @@ def claude_settings(root: Path) -> int:
                    for entry in session for h in entry.get("hooks") or [])
     if not has_hook:
         py = Path(sys.executable).as_posix()
-        script = Path(__file__).resolve().as_posix()
+        script = _project_tool(root).as_posix()
         session.append({"hooks": [{
             "type": "command",
             "command": f'cd "$CLAUDE_PROJECT_DIR" && "{py}" "{script}" status',
@@ -1630,6 +1742,9 @@ def _dispatch(command, root, argv):
     if command in PROJECT_COMMANDS and not is_project_root(root):
         print(NOT_A_PROJECT.format(root=root))
         return 2
+    if command == "version":
+        print(__version__)
+        return 0
     if command == "doctor":
         return doctor(root)
     if command == "init":

@@ -45,14 +45,23 @@ Run `rlcheck status` from this directory; on a new computer, `rlcheck doctor`.
 
 The assignment as received, verbatim, plus the scope agreed with the client.
 This is the reference point everything else is audited against, so it must not
-drift. If the brief genuinely changes, append a dated amendment section rather
-than editing the original text, log the change in `20-decisions.md`, and run the
+drift. The client's original documents live in `store:sources/brief/` and are
+the inputs of the brief task (`t0001-brief`) that wrote this file, so a revised
+original shows up in `rlcheck stale`. If the brief genuinely changes, put the
+new original next to the old one, append a dated amendment section rather than
+editing the original text, log the change in `20-decisions.md`, and run the
 staleness check.
+
+*Verbatim* means the wording is the client's: headings and lists may be set in
+Markdown, nothing may be reworded, shortened or summarised. *Agreed scope* holds
+only what the user or the client has stated; leave it empty until they have.
 
 ```markdown
 # Brief
 
 ## As received (YYYY-MM-DD)
+**Original.** `store:sources/brief/YYYY-MM-DD-<name>.<ext>` (transcribed in t0001-brief)
+
 <verbatim>
 
 ## Agreed scope
@@ -115,7 +124,7 @@ searching (saturation), or accept a known weakness rather than fix it.
 **Decision.** <what was decided>
 **Alternatives considered.** <and why not>
 **Consequences.** <what this affects downstream; which tasks depend on it>
-**Decided by.** <researcher / agreed with client / provisional>
+**Decided by.** <researcher / client / proposed by Claude, confirmed by the researcher / provisional>
 **Supersedes.** <D003, or — if it replaces nothing>
 ```
 

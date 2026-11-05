@@ -27,6 +27,16 @@ is missing, the project is not set up yet: see *Setting up a project*.
 Never put project-specific rules in this skill, and never put general rules in
 `PROFILE.md`.
 
+## Where you may look
+
+Read, list and search only in three places: the project directory, the store
+the user named, and this skill's own directory. Do not look anywhere else on
+the user's computer — not parent folders, not sibling projects, not another
+project's configuration — even when a connector would let you, and even to save
+the user a question. A value taken from another project (a Python path, a store
+location) may belong to a different machine or setup and be wrong here. If you
+need something that is not in these three places, ask the user for it.
+
 ## Running the checks
 
 Completeness, staleness and the current set of decisions are answered by
@@ -40,8 +50,9 @@ First decide where your shell is.
 
 **Claude Code, or any shell that runs on the user's computer in the project**
 (the project files are in your working directory): run
-`python <this skill's directory>/scripts/rlcheck.py <command>` yourself and act
-on the output.
+`python tools/rlcheck.py <command>` yourself — the project's own copy — and act
+on the output. Before `init` has created that copy, use this skill's
+`scripts/rlcheck.py`.
 
 **Claude.ai, or any environment where your shell is a sandbox.** Claude.ai's
 code execution runs on a separate machine, not the user's. Working through a
@@ -49,8 +60,10 @@ Filesystem connector, you can read and write the user's files but you cannot
 execute anything on their computer. **Never run rlcheck in your sandbox**: it
 would check an empty folder, and its output says nothing about the project.
 Instead, give the user the command, ask them to run it and paste the output,
-and wait. Until the output is in the conversation, the step has not happened:
-do not report a task as closed, a check as passed or a project as fresh.
+and wait. Until the output is in the conversation, the step has not happened.
+Report what you wrote, not the state of the project: say that setup is
+finished, a check passed or a task is closed only after the user has pasted
+output that shows it.
 
 To give the user a command that works on their computer, read
 `research-log.local.ini` in the project root through the connector. Its
@@ -76,19 +89,31 @@ If the paths in `[tools]` are Windows paths, assume PowerShell unless the user
 says otherwise.
 
 If there is no `research-log.local.ini`, or it has no `[tools]` section, this
-machine has not been set up yet. Ask the user where `rlcheck.py` is on their
-computer (it is in `skills/research-log/scripts/` of the skill's repository, if
-they have a clone). If they do not have it, offer to write a copy of this
-skill's `scripts/rlcheck.py` through the connector into a folder they choose,
-outside the project. Then the first command they run is `rlcheck init`, which
-records its own location in `[tools]` for every later command.
+machine has not been set up yet. Do not search the disk for Python or for
+another copy of the script. If the project has no `tools/rlcheck.py`, write a
+copy of this skill's `scripts/rlcheck.py` there through the connector: it
+belongs to the project and is versioned with it. Ask the user which Python to
+use, or give the command with `python` and say to replace it with the full path
+to `python.exe` if it is not found. The first command is `rlcheck init`, which
+records both locations in `[tools]` for every later command.
 
 Never say a check passed unless you have seen its output in this session.
+
+**The project's version of rlcheck.** `tools/rlcheck.py` is the version the
+project's records are checked with; `rlcheck version`, `doctor` and `status`
+print it. Compare it with `__version__` in this skill's `scripts/rlcheck.py`.
+If the skill's is newer, tell the user and offer the update, but do not make
+it unasked: a new version can change what the project is held to and how
+digests are computed. Updating is a decision. Log it in `20-decisions.md`,
+replace the file (`rlcheck init --update-tool` run with the newer copy, or
+write the newer file through the connector), then run `rlcheck check` and
+reseal what `stale` reports.
 
 | Command | What it answers |
 |---|---|
 | `rlcheck doctor` | is this project set up on this machine, and what to fix if not |
 | `rlcheck init ...` | create or complete the setup (see *Setting up a project*) |
+| `rlcheck version` | which version of rlcheck this copy is |
 | `rlcheck claude-settings` | give Claude Code access to the store and install the session hook |
 | `rlcheck where store:<path>` | where a store path is on this machine |
 | `rlcheck status` | state of the project, for the start of a session |
@@ -116,8 +141,10 @@ The parts, and what you need from the user for each:
    network folder that holds the large files. Then
    `rlcheck init --id <id> --store "<path>"`. On a second machine the id is
    already in `research-log.ini`; only `rlcheck init --store "<path>"` is needed.
-   `init` also records where `rlcheck.py` is on this machine, which is how you
-   can later give the user exact commands in Claude.ai.
+   `init` also copies rlcheck into `tools/rlcheck.py`, adds `.gitattributes` so
+   that text files keep the same line endings on every machine, and records
+   where Python and the script are on this machine, which is how you can later
+   give the user exact commands in Claude.ai.
    If the folder already contains files but no store marker, `init` refuses;
    rerun with `--adopt` only after the user confirms it is the right folder.
 3. **Access for Claude.** In Claude Code, run `rlcheck claude-settings` after
@@ -128,10 +155,17 @@ The parts, and what you need from the user for each:
    folder and the store.
 4. **PROFILE.md.** Write it with the user, following
    `reference/project-profile.md`. Ask about one section at a time; do not
-   invent source types or task types.
-5. **The brief and the README.** Put the assignment verbatim into
-   `methodology/00-brief.md` and write `README.md` from the template in
-   `reference/documents.md`.
+   invent source types or task types. What you propose yourself is handled as
+   described in *Decisions are logged wherever they are made*.
+5. **The brief.** Ask the user to put the client's original documents into
+   `store:sources/brief/`, with the date in the file name, and never move them
+   afterwards. Open the first task, `t0001-brief`, with those files as inputs
+   and `methodology/00-brief.md` as its output. Transcribe the assignment under
+   *As received*, naming each original by its store path: formatting it as
+   Markdown is fine, rewording it is not. Leave *Agreed scope* empty until the
+   user or the client states it. Because the originals are inputs of a sealed
+   task, `stale` reports it when the client sends a revised version.
+6. **The README.** Write it from the template in `reference/documents.md`.
 
 Each step changes the user's files or settings: say what the command will do
 before running it. Where you cannot run commands, give them to the user as
@@ -155,6 +189,7 @@ cannot run it, read the path from `research-log.local.ini`.
   .research-store        marker naming the project; never edit
   inbox/                 new documents, not yet catalogued
   sources/               catalogued sources, frozen
+    brief/               the client's original assignment and its revisions
   retrieved/             retrieval results too large for the repository (optional)
   exports/               final binary exports of the deliverable
 ```
@@ -198,7 +233,10 @@ Full layout, contents and templates: `reference/documents.md`.
 README.md                     living    router: what this project is, where things are, current state
 PROFILE.md                    living    the project layer (source types, task types, delivery)
 research-log.ini                        project id; shared through git
-research-log.local.ini                  where the store is on this machine; not in git
+research-log.local.ini                  this machine's store and tool paths; not in git
+.gitattributes                          keeps text files in LF on every machine
+tools/
+  rlcheck.py                            the project's copy of the checks, versioned with it
 methodology/
   00-brief.md                 frozen    the assignment, verbatim, plus agreed scope
   10-plan.md                  living    current plan and what comes next
@@ -237,6 +275,33 @@ snapshot taken later is a different retrieval. Format and rules:
 than from a source on disk is not a finding. Either find and snapshot a source
 for it, or mark it in the record as unverified background, so the researcher
 can decide what to do with it.
+
+## Decisions are logged wherever they are made
+
+Decisions are not only made inside tasks. Setting up the project, revising
+`PROFILE.md`, reordering the plan and agreeing scope with the client are
+methodological decisions too, and the decision log is the only place their
+reasons survive: git keeps what changed, not why.
+
+- A change to `PROFILE.md`, to the phases or their order in `10-plan.md`, or to
+  *Agreed scope* or *Amendments* in `00-brief.md` that changes how the research
+  is done gets an entry in `20-decisions.md` at once, then `rlcheck decisions`.
+  Updating *Now* and *Next* in the plan to reflect progress is not a decision.
+- The choices made during setup — task types, conventions, what is in scope —
+  are logged as they are confirmed, not after setup is finished.
+- `**Decided by.**` says who decided: the researcher, the client, or "proposed
+  by Claude, confirmed by the researcher". A choice you made alone is marked
+  provisional.
+- A revised brief from the client goes into `store:sources/brief/` next to the
+  original, under a new date. Open a new brief task for it, add it under
+  *Amendments*, and log what it changes.
+
+When you propose content yourself — task types, conventions, definitions, a
+scope — say which items are your proposal and which come from the user or the
+brief, and have the proposals confirmed one by one, not as a block. Never put
+into *Agreed scope* anything the user or the client has not stated. Content that
+comes from your own background knowledge, such as a definition of a term or an
+assumed list of languages, is marked as such where it is written, or left out.
 
 ## Opening a task
 
@@ -377,5 +442,9 @@ point at it.
   your own knowledge presented as a finding.
 - Never keep a decision, limitation or partial output only in the conversation
   until the end of a task. Write it when it happens.
+- Never look outside the project directory, the store the user named and this
+  skill's directory, and never reuse values from another project.
+- Never present your own proposal or background knowledge as something the user
+  or the client decided.
 - Never assess staleness, completeness or coverage by reading files when the
   script can answer it, and never report a check you have not seen run.

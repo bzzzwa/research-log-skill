@@ -79,14 +79,15 @@ project's root; the model runs the checks itself.
 
 **Claude.ai.** Zip the `research-log` folder and upload it under
 Settings → Skills (requires code execution enabled). Give the Filesystem
-connector access to the project folder and to the store. Claude.ai's code
-execution runs in a sandbox, not on your computer, so the model cannot run
-`rlcheck` against the project; it gives you the exact command instead and asks
-you to paste the output. It takes the paths for that command from
-`research-log.local.ini`, where `init` records them. Keep a clone of this
-repository (or at least `rlcheck.py`) on each computer; `rlcheck` refuses to run
-outside a project folder, so a stray run in the sandbox cannot report a false
-clean result.
+connector access to the project folder and to the store, and nothing else the
+model does not need: the skill tells it to stay within the project, the store
+and the skill. Claude.ai's code execution runs in a sandbox, not on your
+computer, so the model cannot run `rlcheck` against the project; it gives you
+the exact command instead and asks you to paste the output. On first setup it
+writes the script into the project's `tools/`; after that it takes the paths
+from `research-log.local.ini`, where `init` records them. `rlcheck` refuses to
+run outside a project folder, so a stray run in the sandbox cannot report a
+false clean result.
 
 ## Set up a research project
 
@@ -100,7 +101,8 @@ python <skill-dir>/scripts/rlcheck.py claude-settings
 ```
 
 `init` writes `research-log.ini` (the project id, in git), the methodology
-skeleton, `.gitignore` entries, the store layout and its marker, and
+skeleton, `.gitignore` and `.gitattributes` entries, a copy of the script in
+`tools/rlcheck.py`, the store layout and its marker, and
 `research-log.local.ini` (this machine's store path and the location of Python
 and `rlcheck.py`, not in git). On another computer, after cloning, only the
 store path is needed:
@@ -161,6 +163,18 @@ The store is outside the repository and needs no ignore rule. Its backup and
 version history come from the shared storage it lives on (OneDrive, SharePoint,
 a network drive), not from git.
 
+Two files are committed on purpose:
+
+| File | Why it is in git |
+|---|---|
+| `tools/rlcheck.py` | the project keeps the version of the checks its records were validated with; updating it is a logged decision |
+| `.gitattributes` | `* text=auto eol=lf` keeps text files identical on every machine. Digests of text files are also computed with line endings normalised, so a checkout with CRLF does not make records look stale |
+
+In a project created before `.gitattributes` was added, run `rlcheck init`, then
+`git add --renormalize .` and commit. Digests computed by rlcheck before
+version 2026.11.3 did not normalise line endings, so after updating the
+project's copy run `rlcheck stale` and reseal what it reports.
+
 ## Pre-commit hook
 
 If the research project is a git repository with its root at the project root,
@@ -168,7 +182,7 @@ If the research project is a git repository with its root at the project root,
 
 ```sh
 #!/bin/sh
-python "$HOME/.claude/skills/research-log/scripts/rlcheck.py" check
+python tools/rlcheck.py check
 ```
 
 A commit is refused while any record is incomplete or stale, a snapshot is
@@ -192,7 +206,7 @@ by hand, it looks like this:
         "hooks": [
           {
             "type": "command",
-            "command": "cd \"$CLAUDE_PROJECT_DIR\" && python \"$HOME/.claude/skills/research-log/scripts/rlcheck.py\" status"
+            "command": "cd \"$CLAUDE_PROJECT_DIR\" && python tools/rlcheck.py status"
           }
         ]
       }
