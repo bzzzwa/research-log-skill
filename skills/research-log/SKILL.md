@@ -5,7 +5,7 @@ description: Keep the methodology log and task records of a social-science desk-
 
 # Research Log
 
-**Version.** 2026.11.6 — the same number as `__version__` in
+**Version.** 2026.11.7 — the same number as `__version__` in
 `scripts/rlcheck.py`. If this skill is available to you more than once with
 different versions (for example in the project and in the user's account), tell
 the user which version you are following.
@@ -360,7 +360,8 @@ reasons survive: git keeps what changed, not why.
   are logged as they are confirmed, not after setup is finished.
 - `**Decided by.**` says who decided: the researcher, the client, or "proposed
   by Claude, confirmed by the researcher". A choice you made alone, or one the
-  user has not yet confirmed, contains the word "provisional".
+  user has not yet confirmed, contains the word "provisional"; `rlcheck` also
+  treats "proposed by Claude" without "confirmed" as provisional.
 - When the user confirms a provisional decision, add a new entry with
   `**Confirms.** D00N`. Do not edit the old entry and do not supersede it: the
   decision has not changed, it has been confirmed, and the in-force view marks

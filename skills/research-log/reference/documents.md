@@ -144,8 +144,9 @@ searching (saturation), or accept a known weakness rather than fix it.
 confirm an earlier provisional decision. The confirmed decision stays in force
 and the in-force view marks it as confirmed; nothing has to be restated. Use
 `**Supersedes.**` only when the decision itself changes. A decision is
-provisional when its `**Decided by.**` contains the word "provisional";
-`rlcheck status` lists those not yet confirmed.
+provisional when its `**Decided by.**` contains the word "provisional", or says
+"proposed by Claude" without "confirmed"; `rlcheck status` lists those not yet
+confirmed.
 
 The header must keep the form `## D012 — YYYY-MM-DD — title`, and each field
 starts its own line with the bold label ending in a full stop; `validate`
