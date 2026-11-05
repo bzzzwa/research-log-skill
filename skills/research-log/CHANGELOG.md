@@ -12,6 +12,20 @@ lists under *In a project*, oldest first.
 
 ---
 
+## 2026.11.8
+
+**Changed**
+- The repository README is rewritten: requirements, the layout of a project and
+  its store, how day-to-day work on a project goes, a table of commands run from
+  the project's own copy (`python tools/rlcheck.py`), what is in git, and how to
+  update the skill and a project. Upgrade notes per version now live only in
+  this changelog.
+- No change to the checks or to `SKILL.md` beyond the version number.
+
+**In a project**
+- Nothing is required. Updating `tools/rlcheck.py` changes only its version
+  number; it can wait for the next version that changes the checks.
+
 ## 2026.11.7
 
 **Changed**

@@ -46,7 +46,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-__version__ = "2026.11.7"
+__version__ = "2026.11.8"
 
 RECORD_NAME = "record.md"
 TASKS_DIR = "tasks"
