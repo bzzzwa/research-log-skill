@@ -2,28 +2,83 @@
 """rlcheck - completeness and freshness checks for a research-log project.
 
 Deterministic bookkeeping that an LLM should never be asked to do by eye:
-which task outputs are stale because their inputs changed, and which task
-records are incomplete.
+which task records are incomplete, which outputs are stale because their
+inputs changed, which decisions are still in force, and whether every
+retrieval snapshot is documented.
 
-Usage, from the project root:
-    python rlcheck.py status              # short summary, safe to paste into a new session
-    python rlcheck.py validate            # structural check of every task record
-    python rlcheck.py stale               # recompute input digests, report drift
-    python rlcheck.py seal tasks/t0007    # write current input digests into a record
+Always run from the project root (the directory containing PROFILE.md).
+The script can live anywhere; it works on the current directory.
 
+Large source files live outside the repository in a shared store. Records
+refer to them as store:<path>; each machine maps the store to a local path
+in research-log.local.ini.
+
+Usage:
+    python rlcheck.py doctor               check the setup and say how to fix it
+    python rlcheck.py init [--id ID] [--store PATH] [--adopt] [--update-tool]
+                           [--fix-line-endings]
+                                           create or complete the project setup
+    python rlcheck.py version              print the version of this copy
+    python rlcheck.py claude-settings      write .claude/settings.local.json for Claude Code
+    python rlcheck.py where store:<path>   show where a store path is on this machine
+    python rlcheck.py status               state for a new session; handoff of open tasks
+    python rlcheck.py validate             records, logs, snapshots, derived files
+    python rlcheck.py stale                recompute input digests, report drift
+    python rlcheck.py check                validate + stale, for pre-commit hooks
+    python rlcheck.py seal tasks/t0007-x [--rerun D012 | --accept D012]
+                                           write current input digests into a record
+    python rlcheck.py decisions            regenerate methodology/25-decisions-in-force.md
+    python rlcheck.py retrieval <slug>     create a dated retrieval snapshot directory
+
+doctor, validate, stale and check exit non-zero when they find a problem.
 Zero dependencies, Python 3.8+.
 """
 
 from __future__ import annotations
 
+import configparser
+import datetime as _dt
 import hashlib
+import json
+import re
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
+__version__ = "2026.11.7"
+
 RECORD_NAME = "record.md"
 TASKS_DIR = "tasks"
+DECISIONS_LOG = "methodology/20-decisions.md"
+DECISIONS_IN_FORCE = "methodology/25-decisions-in-force.md"
+APPEND_ONLY = ["methodology/20-decisions.md", "methodology/40-insights.md"]
+LIMITATIONS = "methodology/30-limitations.md"
+RETRIEVED_DIR = "sources/retrieved"
+MANIFEST_NAME = "retrieval.md"
+
+CONFIG = "research-log.ini"
+LOCAL_CONFIG = "research-log.local.ini"
+CACHE_FILE = ".rlcheck-cache.json"
+CLAUDE_LOCAL_SETTINGS = ".claude/settings.local.json"
+STORE_PREFIX = "store:"
+STORE_MARKER = ".research-store"
+STORE_DIRS = ["inbox", "sources", "sources/brief", "work", "exports"]
+STORE_OUTPUT_ROOTS = {"sources", "work", "exports"}
+PLAN = "methodology/10-plan.md"
+RESEAL_KINDS = {"rerun", "accepted"}
+STORE_INBOX = "inbox"
+GITIGNORE_LINES = [LOCAL_CONFIG, CACHE_FILE, CLAUDE_LOCAL_SETTINGS]
+GITATTRIBUTES_LINE = "* text=auto eol=lf"
+TOOL_COPY = "tools/rlcheck.py"
+CACHE_VERSION = 2
+TEXT_SUFFIXES = {".md", ".txt", ".csv", ".tsv", ".json", ".yaml", ".yml", ".ini", ".py", ".bib"}
+PROJECT_ID = re.compile(r"^[a-z0-9][a-z0-9-]{1,62}$")
 
 REQUIRED_KEYS = ["id", "title", "status", "opened", "inputs", "outputs"]
+PERFORMED_BY = "performed-by"
+# Declarations that a complete record must make explicitly, even if empty ([]).
+DECLARATION_KEYS = ["decisions", "limitations", "retrievals"]
 ALLOWED_STATUS = {"planned", "in-progress", "complete", "superseded"}
 REQUIRED_HEADINGS = [
     "## Question",
@@ -34,14 +89,74 @@ REQUIRED_HEADINGS = [
     "## Handoff",
 ]
 
+MANIFEST_KEYS = ["tool", "source", "retrieved", "results", "captured"]
+MANIFEST_CAPTURED = {"full", "partial"}
+MANIFEST_HEADINGS_ALWAYS = ["## Query"]
+MANIFEST_HEADING_PARTIAL = "## Not captured"
+
 SKIP_NAMES = {".git", ".DS_Store", "__pycache__", ".ipynb_checkpoints"}
+
+DECISION_ID = re.compile(r"^D\d{3,}$")
+LIMITATION_ID = re.compile(r"^L\d{3,}$")
+DECISION_HEADER = re.compile(
+    r"^##\s+(D\d{3,})\s*[—–-]\s*(\d{4}-\d{2}-\d{2})\s*[—–-]\s*(.+?)\s*$"
+)
+LIMITATION_ROW = re.compile(r"^\|\s*(L\d{3,})\s*\|")
+FIELD_LINE = re.compile(r"^\*\*([^*]+?)\.\*\*\s*(.*)$")
+
+# Template placeholders: <something>, and the usual markers.
+PLACEHOLDER = re.compile(r"<([A-Za-z][^<>\n]{0,160})>")
+MARKER = re.compile(r"\b(TODO|TBD|FIXME)\b")
+HTML_TAGS = {
+    "a", "b", "i", "u", "em", "strong", "br", "sup", "sub", "kbd", "img",
+    "details", "summary", "span", "div", "p", "hr", "code", "pre", "small",
+}
+
+GENERATED_MARK = "<!-- generated by rlcheck.py decisions; do not edit -->"
+
+
+def write_lf(path: Path, text: str) -> None:
+    """Write UTF-8 text with LF line endings on every platform.
+
+    Path.write_text would write CRLF on Windows, and its newline= argument
+    needs Python 3.10. Every file rlcheck writes goes through here.
+    """
+    with path.open("w", encoding="utf-8", newline="\n") as fh:
+        fh.write(text)
+
+
+# --------------------------------------------------------------------------
+# Reporting
+# --------------------------------------------------------------------------
+
+
+class Report:
+    def __init__(self):
+        self.fails = 0
+        self.warns = 0
+
+    def fail(self, where, msg):
+        print(f"FAIL {where}: {msg}")
+        self.fails += 1
+
+    def warn(self, where, msg):
+        print(f"WARN {where}: {msg}")
+        self.warns += 1
+
+    def fail_once(self, key, where, msg):
+        if not hasattr(self, "_once"):
+            self._once = set()
+        if key not in self._once:
+            self._once.add(key)
+            self.fail(where, msg)
 
 
 # --------------------------------------------------------------------------
 # Minimal front-matter reader
 # --------------------------------------------------------------------------
-# Deliberately supports only the subset the record schema uses:
+# Deliberately supports only the subset the schemas use:
 #   key: scalar
+#   key: []                 (also [a, b] for short lists of plain scalars)
 #   key:
 #     - scalar
 #   key:
@@ -67,12 +182,10 @@ def parse_front_matter(text: str):
         raise ValueError("front matter is not closed by a second '---'")
 
     data = {}
+    inline = set()
     key = None
-    i = 1
-    while i < end:
-        raw = lines[i]
+    for raw in lines[1:end]:
         stripped = raw.strip()
-        i += 1
         if not stripped or stripped.startswith("#"):
             continue
 
@@ -83,13 +196,23 @@ def parse_front_matter(text: str):
                 raise ValueError(f"cannot parse front-matter line: {raw!r}")
             key, _, value = stripped.partition(":")
             key = key.strip()
-            value = _strip_quotes(value)
-            data[key] = value if value not in ("", "null", "~") else None
+            if key in data:
+                raise ValueError(f"duplicate front-matter key {key!r}")
+            value = value.strip()
+            if value.startswith("[") and value.endswith("]"):
+                inner = value[1:-1].strip()
+                data[key] = [_strip_quotes(x) for x in inner.split(",") if x.strip()]
+                inline.add(key)
+            else:
+                value = _strip_quotes(value)
+                data[key] = value if value not in ("", "null", "~") else None
             continue
 
         if stripped.startswith("- "):
             if key is None:
                 raise ValueError(f"list item before any key: {raw!r}")
+            if key in inline:
+                raise ValueError(f"key {key!r} has both an inline list and list items")
             item = stripped[2:].strip()
             if data.get(key) in (None, ""):
                 data[key] = []
@@ -111,27 +234,302 @@ def parse_front_matter(text: str):
         if ":" not in stripped:
             raise ValueError(f"cannot parse front-matter line: {raw!r}")
         k, _, v = stripped.partition(":")
-        last[k.strip()] = _strip_quotes(v)
+        k = k.strip()
+        if k in last:
+            raise ValueError(f"duplicate field {k!r} in a list item of {key!r}: {raw!r}")
+        last[k] = _strip_quotes(v)
 
     return data, end
 
 
+def load_md(path: Path):
+    text = path.read_text(encoding="utf-8")
+    meta, end = parse_front_matter(text)
+    body = "\n".join(text.splitlines()[end + 1 :])
+    return meta, body
+
+
 # --------------------------------------------------------------------------
-# Digests
+# Body helpers
 # --------------------------------------------------------------------------
 
 
-def _hash_file(path: Path) -> str:
+def _without_code(text: str) -> str:
+    """Drop fenced code blocks, inline code and HTML comments.
+
+    Search strings and data often contain '<' and '>' legitimately; they
+    belong in code, and code is never scanned for placeholders.
+    """
+    text = re.sub(r"```.*?```", "", text, flags=re.S)
+    text = re.sub(r"~~~.*?~~~", "", text, flags=re.S)
+    text = re.sub(r"`[^`\n]*`", "", text)
+    text = re.sub(r"<!--.*?-->", "", text, flags=re.S)
+    return text
+
+
+def find_placeholders(text: str):
+    found = []
+    clean = _without_code(text)
+    for m in PLACEHOLDER.finditer(clean):
+        inner = m.group(1)
+        first = re.split(r"[\s/>]", inner, maxsplit=1)[0].lower()
+        if first in HTML_TAGS or inner.lower().startswith(("http://", "https://", "mailto:")):
+            continue
+        found.append(m.group(0))
+    found.extend(m.group(0) for m in MARKER.finditer(clean))
+    return found
+
+
+def sections(body: str):
+    """Map each level-2 heading line to the text beneath it."""
+    out = {}
+    current = None
+    buf = []
+    for line in body.splitlines():
+        if line.startswith("## "):
+            if current is not None:
+                out[current] = "\n".join(buf)
+            current = line.strip()
+            buf = []
+        elif current is not None:
+            buf.append(line)
+    if current is not None:
+        out[current] = "\n".join(buf)
+    return out
+
+
+def is_empty(text: str) -> bool:
+    return not re.sub(r"<!--.*?-->", "", text, flags=re.S).strip()
+
+
+def parse_time(value: str):
+    """Parse an ISO date or date-time; None if it is neither."""
+    value = (value or "").strip()
+    for parser in (_dt.datetime.fromisoformat, lambda v: _dt.datetime.combine(_dt.date.fromisoformat(v), _dt.time())):
+        try:
+            return parser(value)
+        except ValueError:
+            continue
+    return None
+
+
+def today() -> _dt.date:
+    """The date on this computer. Records take their dates from here."""
+    return _dt.date.today()
+
+
+def _date_of(value):
+    t = parse_time(value) if value else None
+    return t.date() if t else None
+
+
+def _short(items, n=3):
+    shown = ", ".join(items[:n])
+    return shown + (f" (+{len(items) - n} more)" if len(items) > n else "")
+
+
+# --------------------------------------------------------------------------
+# Configuration, the shared store and digests
+# --------------------------------------------------------------------------
+
+
+def _read_ini(path: Path):
+    cp = configparser.ConfigParser(interpolation=None)
+    cp.read(path, encoding="utf-8")
+    return cp
+
+
+def read_marker(store_path: Path):
+    """Return the project id written in a store's marker file, or None."""
+    marker = store_path / STORE_MARKER
+    if not marker.is_file():
+        return None
+    for line in marker.read_text(encoding="utf-8").splitlines():
+        if line.strip().startswith("id:"):
+            return line.split(":", 1)[1].strip()
+    return None
+
+
+class Store:
+    """The project's shared store as seen from this machine.
+
+    state is one of:
+      'none'          the project declares no store (no research-log.ini [store])
+      'unmapped'      declared, but this machine has no local path for it
+      'unreachable'   mapped to a path that does not exist (drive not mounted,
+                      folder not synced)
+      'wrong'         the path exists but is not this project's store
+      'ok'            usable
+    Only 'ok' allows store paths to be read; 'unmapped' and 'unreachable' are
+    normal on a machine without the store; 'none' and 'wrong' are setup errors.
+    """
+
+    def __init__(self, root: Path):
+        self.root = root
+        self.id = None
+        self.path = None
+        self.state = "none"
+        self.reason = f"{CONFIG} declares no [store]"
+
+        cfg = root / CONFIG
+        if cfg.is_file():
+            ini = _read_ini(cfg)
+            self.id = ini.get("store", "id", fallback=None) or None
+        if not self.id:
+            return
+
+        local = root / LOCAL_CONFIG
+        raw = None
+        if local.is_file():
+            raw = _read_ini(local).get("store", "path", fallback=None)
+        if not raw:
+            self.state = "unmapped"
+            self.reason = f"store '{self.id}' is not mapped on this machine ({LOCAL_CONFIG})"
+            return
+
+        path = Path(raw.strip()).expanduser()
+        if not path.is_absolute():
+            path = (root / path)
+        self.path = path
+        if not path.is_dir():
+            self.state = "unreachable"
+            self.reason = f"store path does not exist on this machine: {path}"
+            return
+
+        marker = read_marker(path)
+        if marker is None:
+            self.state = "wrong"
+            self.reason = f"{path} has no {STORE_MARKER}; it is not a research-log store"
+        elif marker != self.id:
+            self.state = "wrong"
+            self.reason = f"{path} is the store of '{marker}', not of '{self.id}'"
+        else:
+            self.state = "ok"
+            self.reason = ""
+
+    @property
+    def usable(self):
+        return self.state == "ok"
+
+    @property
+    def is_error(self):
+        return self.state in ("none", "wrong")
+
+
+STORE = None  # set in main()
+
+
+def is_store_path(rel: str) -> bool:
+    return isinstance(rel, str) and rel.strip().startswith(STORE_PREFIX)
+
+
+def resolve(root: Path, rel: str):
+    """Map a record path to (state, Path or None, reason).
+
+    state is 'ok' for a usable location, otherwise the store state.
+    Plain paths are relative to the project root and always 'ok'.
+    """
+    rel = rel.strip()
+    if not is_store_path(rel):
+        return "ok", root / rel, ""
+    store = STORE if STORE is not None else Store(root)
+    inner = rel[len(STORE_PREFIX):].strip().lstrip("/\\")
+    if not store.usable:
+        return store.state, None, store.reason
+    return "ok", store.path / inner, ""
+
+
+def _sha256_file(path: Path) -> str:
+    """SHA-256 of a file, independent of line endings for text files.
+
+    A file whose first 8 KiB contain no NUL byte is treated as text and
+    hashed with CRLF normalised to LF. Git on Windows rewrites line endings
+    on checkout, so without this the same document would have a different
+    digest on every machine and every record would look stale.
+    """
     h = hashlib.sha256()
     with path.open("rb") as fh:
-        for chunk in iter(lambda: fh.read(65536), b""):
+        chunk = fh.read(8192)
+        text = b"\0" not in chunk
+        carry = b""
+        while chunk:
+            if text:
+                chunk = carry + chunk
+                carry = b""
+                if chunk.endswith(b"\r"):
+                    carry, chunk = b"\r", chunk[:-1]
+                chunk = chunk.replace(b"\r\n", b"\n")
             h.update(chunk)
+            chunk = fh.read(65536)
+        h.update(carry)
     return h.hexdigest()
 
 
+class DigestCache:
+    """Per-machine cache of file hashes keyed by path, size and mtime.
+
+    Store files are often cloud placeholders that are downloaded on read;
+    the cache keeps a repeated stale check from reading them again. The
+    cache is versioned so that a change in how digests are computed never
+    returns an old value.
+    """
+
+    def __init__(self, root: Path):
+        self.file = root / CACHE_FILE
+        self.data = {}
+        self.dirty = False
+        try:
+            raw = json.loads(self.file.read_text(encoding="utf-8"))
+            if isinstance(raw, dict) and raw.get("version") == CACHE_VERSION:
+                self.data = raw.get("files") or {}
+        except (OSError, ValueError):
+            self.data = {}
+
+    def hash(self, path: Path) -> str:
+        st = path.stat()
+        key = str(path.resolve())
+        hit = self.data.get(key)
+        if hit and hit.get("size") == st.st_size and hit.get("mtime") == st.st_mtime_ns:
+            return hit["sha256"]
+        value = _sha256_file(path)
+        self.data[key] = {"size": st.st_size, "mtime": st.st_mtime_ns, "sha256": value}
+        self.dirty = True
+        return value
+
+    def save(self):
+        if self.dirty:
+            try:
+                payload = {"version": CACHE_VERSION, "files": self.data}
+                write_lf(self.file, json.dumps(payload, indent=0, sort_keys=True))
+            except OSError:
+                pass
+
+
+CACHE = None  # set in main()
+
+
+def _hash_file(path: Path) -> str:
+    if CACHE is not None:
+        return CACHE.hash(path)
+    return _sha256_file(path)
+
+
+UNAVAILABLE = ("unmapped", "unreachable")
+
+
 def digest(root: Path, rel: str) -> str:
-    """Digest of a file or of a directory tree, as 'sha256:...' or 'tree:...'."""
-    target = (root / rel).resolve()
+    """Digest of a file or directory tree.
+
+    Returns 'sha256:...' or 'tree:...', or one of the sentinel values
+    'missing' (location reachable, nothing there), 'unavailable' (store not
+    reachable on this machine) or 'error' (store misconfigured).
+    """
+    state, target, _ = resolve(root, rel)
+    if state in UNAVAILABLE:
+        return "unavailable"
+    if state != "ok":
+        return "error"
+    target = target.resolve()
     if not target.exists():
         return "missing"
     if target.is_file():
@@ -149,6 +547,387 @@ def digest(root: Path, rel: str) -> str:
     return "tree:" + h.hexdigest()
 
 
+def check_path(root: Path, rel: str, rep: "Report", where: str, what: str, missing_is_fail=True):
+    """Report on whether a record path exists. Returns True if it was checked."""
+    state, target, reason = resolve(root, rel)
+    if state in UNAVAILABLE:
+        rep.unchecked = getattr(rep, "unchecked", 0) + 1
+        return False
+    if state != "ok":
+        rep.fail_once(("store", state), CONFIG if state == "none" else LOCAL_CONFIG,
+                      f"{reason}; store paths cannot be checked")
+        return False
+    if not target.exists():
+        if missing_is_fail:
+            rep.fail(where, f"{what} does not exist: {rel}")
+        else:
+            rep.warn(where, f"{what} does not exist yet: {rel}")
+    return True
+
+
+def _norm(rel: str) -> str:
+    return rel.replace("\\", "/").strip().strip("/")
+
+
+def covered_by(path: str, inputs) -> bool:
+    """True if path is one of the inputs or lies inside an input directory."""
+    p = _norm(path)
+    for item in inputs:
+        q = _norm(item)
+        if p == q or p.startswith(q + "/"):
+            return True
+    return False
+
+
+# --------------------------------------------------------------------------
+# Methodology logs
+# --------------------------------------------------------------------------
+
+
+def parse_decisions(text: str):
+    """Return the decision entries of 20-decisions.md in file order."""
+    entries = []
+    cur = None
+    field = None
+    for line in text.splitlines():
+        m = DECISION_HEADER.match(line)
+        if m:
+            cur = {
+                "id": m.group(1),
+                "date": m.group(2),
+                "title": m.group(3),
+                "fields": {},
+                "raw": [line],
+            }
+            entries.append(cur)
+            field = None
+            continue
+        if cur is None:
+            continue
+        if line.startswith("## "):
+            # a level-2 heading that is not a well-formed decision header
+            cur = None
+            field = None
+            continue
+        cur["raw"].append(line)
+        if line.strip() in ("---", "***", "___"):
+            continue
+        fm = FIELD_LINE.match(line.strip())
+        if fm:
+            field = fm.group(1).strip().lower()
+            cur["fields"][field] = fm.group(2).strip()
+        elif field is not None:
+            prev = cur["fields"][field]
+            cur["fields"][field] = (prev + "\n" + line).strip() if line.strip() else prev + "\n"
+    for e in entries:
+        e["fields"] = {k: v.strip() for k, v in e["fields"].items()}
+        e["supersedes"] = re.findall(r"D\d{3,}", e["fields"].get("supersedes", ""))
+        e["confirms"] = re.findall(r"D\d{3,}", e["fields"].get("confirms", ""))
+        by = e["fields"].get("decided by", "").lower()
+        # "proposed by Claude" without a confirmation is provisional too
+        e["provisional"] = "provisional" in by or ("proposed by claude" in by and "confirmed" not in by)
+    return entries
+
+
+def decision_links(entries):
+    """Return (superseded_by, confirmed_by) maps: id -> list of later ids."""
+    superseded_by, confirmed_by = {}, {}
+    for e in entries:
+        for old in e["supersedes"]:
+            superseded_by.setdefault(old, []).append(e["id"])
+        for old in e["confirms"]:
+            confirmed_by.setdefault(old, []).append(e["id"])
+    return superseded_by, confirmed_by
+
+
+def awaiting_confirmation(entries):
+    """Ids of provisional decisions in force that no later entry confirms."""
+    superseded_by, confirmed_by = decision_links(entries)
+    return [e["id"] for e in entries
+            if e["provisional"] and e["id"] not in superseded_by and e["id"] not in confirmed_by]
+
+
+def malformed_decision_headers(text: str):
+    bad = []
+    for line in text.splitlines():
+        if re.match(r"^##\s+D\d", line) and not DECISION_HEADER.match(line):
+            bad.append(line.strip())
+    return bad
+
+
+def parse_limitation_ids(text: str):
+    return [m.group(1) for m in map(LIMITATION_ROW.match, text.splitlines()) if m]
+
+
+def render_in_force(entries, source_digest: str) -> str:
+    superseded_by, confirmed_by = decision_links(entries)
+    in_force = [e for e in entries if e["id"] not in superseded_by]
+    out_of_force = [e for e in entries if e["id"] in superseded_by]
+
+    lines = [
+        GENERATED_MARK,
+        "# Decisions in force",
+        "",
+        f"Derived from `{DECISIONS_LOG}` ({source_digest}).",
+        "Regenerate with `rlcheck.py decisions`. The log is the record;",
+        "this file is the current view of it.",
+        "",
+        f"**In force.** {len(in_force)}  **Superseded.** {len(out_of_force)}",
+        "",
+    ]
+    for e in in_force:
+        f = e["fields"]
+        lines.append(f"## {e['id']} — {e['date']} — {e['title']}")
+        lines.append("")
+        lines.append(f.get("decision", "") or "*(no Decision field)*")
+        lines.append("")
+        meta = []
+        if f.get("decided by"):
+            meta.append(f"*Decided by:* {f['decided by']}")
+        if e["id"] in confirmed_by:
+            meta.append(f"*Confirmed by:* {', '.join(confirmed_by[e['id']])}")
+        elif e["provisional"]:
+            meta.append("**Provisional, awaiting confirmation.**")
+        if e["confirms"]:
+            meta.append(f"*Confirms:* {', '.join(e['confirms'])}")
+        if e["supersedes"]:
+            meta.append(f"*Supersedes:* {', '.join(e['supersedes'])}")
+        if meta:
+            lines.append(" · ".join(meta))
+            lines.append("")
+    if out_of_force:
+        lines.append("## Superseded")
+        lines.append("")
+        lines.append("| Decision | Title | Superseded by |")
+        lines.append("|---|---|---|")
+        for e in out_of_force:
+            lines.append(f"| {e['id']} | {e['title']} | {', '.join(superseded_by[e['id']])} |")
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def load_decisions(root: Path):
+    path = root / DECISIONS_LOG
+    if not path.is_file():
+        return None, None
+    text = path.read_text(encoding="utf-8")
+    return text, parse_decisions(text)
+
+
+def check_decisions(root: Path, rep: Report):
+    """Validate the decision log and the freshness of its derived view.
+
+    Returns the set of decision ids, or None if there is no log yet.
+    """
+    text, entries = load_decisions(root)
+    if text is None:
+        return None
+    where = DECISIONS_LOG
+
+    for line in malformed_decision_headers(text):
+        rep.fail(where, f"decision header not in the form '## D012 — YYYY-MM-DD — title': {line!r}")
+
+    seen = {}
+    order = []
+    for e in entries:
+        if e["id"] in seen:
+            rep.fail(where, f"duplicate decision id {e['id']}")
+        seen[e["id"]] = e
+        order.append(e["id"])
+        if is_empty(e["fields"].get("decision", "")):
+            rep.fail(where, f"{e['id']} has no **Decision.** text")
+        ph = find_placeholders("\n".join(e["raw"]))
+        if ph:
+            rep.fail(where, f"{e['id']} contains placeholder text: {_short(ph)}")
+
+    position = {rid: i for i, rid in enumerate(order)}
+    for e in entries:
+        for verb, targets in (("supersedes", e["supersedes"]), ("confirms", e["confirms"])):
+            for old in targets:
+                if old == e["id"]:
+                    rep.fail(where, f"{e['id']} {verb} itself")
+                elif old not in seen:
+                    rep.fail(where, f"{e['id']} {verb} {old}, which does not exist")
+                elif position[old] > position[e["id"]]:
+                    rep.fail(where, f"{e['id']} {verb} {old}, which comes after it")
+        for old in e["confirms"]:
+            if old in seen and not seen[old]["provisional"]:
+                rep.warn(where, f"{e['id']} confirms {old}, which is not marked provisional")
+
+    for e in entries:
+        d = _date_of(e["date"])
+        if d and d > today() + _dt.timedelta(days=1):
+            rep.warn(where, f"{e['id']} is dated {e['date']}, after today ({today()})")
+
+    nums = [int(rid[1:]) for rid in order]
+    if nums != sorted(nums):
+        rep.warn(where, "decision ids are not in ascending order")
+
+    # derived view must match a fresh regeneration
+    expected = render_in_force(entries, digest(root, DECISIONS_LOG))
+    derived = root / DECISIONS_IN_FORCE
+    if entries:
+        if not derived.is_file():
+            rep.fail(DECISIONS_IN_FORCE, "missing; run 'rlcheck.py decisions'")
+        elif derived.read_text(encoding="utf-8") != expected:
+            rep.fail(DECISIONS_IN_FORCE, "out of date or hand-edited; run 'rlcheck.py decisions'")
+    return set(seen)
+
+
+def _git_head_text(root: Path, rel: str):
+    """Text of rel at HEAD, or None if there is no git, no commit or no such file."""
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(root), "show", f"HEAD:./{rel}"],
+            capture_output=True, timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if out.returncode != 0:
+        return None
+    return out.stdout.decode("utf-8", errors="replace")
+
+
+def check_append_only(root: Path, rep: Report):
+    """Committed entries of append-only files must not change; new ones may follow."""
+    for rel in APPEND_ONLY:
+        path = root / rel
+        if not path.is_file():
+            continue
+        head = _git_head_text(root, rel)
+        if head is None:
+            continue
+        committed = head.replace("\r\n", "\n").rstrip()
+        current = path.read_text(encoding="utf-8").replace("\r\n", "\n")
+        if not current.startswith(committed):
+            rep.fail(rel, "an entry that is already committed was changed or removed; restore it "
+                          f"(git diff HEAD -- {rel}) and add a new entry that corrects it")
+
+
+def check_limitations(root: Path, rep: Report):
+    path = root / LIMITATIONS
+    if not path.is_file():
+        return None
+    ids = parse_limitation_ids(path.read_text(encoding="utf-8"))
+    seen = set()
+    for lid in ids:
+        if lid in seen:
+            rep.fail(LIMITATIONS, f"duplicate limitation id {lid}")
+        seen.add(lid)
+    return seen
+
+
+# --------------------------------------------------------------------------
+# Retrieval snapshots
+# --------------------------------------------------------------------------
+
+
+def find_snapshots(root: Path):
+    base = root / RETRIEVED_DIR
+    if not base.is_dir():
+        return []
+    return sorted(p for p in base.iterdir() if p.is_dir() and p.name not in SKIP_NAMES)
+
+
+def check_snapshot(root: Path, snap: Path, rep: Report):
+    rel = snap.relative_to(root).as_posix()
+    manifest = snap / MANIFEST_NAME
+    if not manifest.is_file():
+        rep.fail(rel, f"snapshot has no {MANIFEST_NAME}")
+        return
+    try:
+        meta, body = load_md(manifest)
+    except ValueError as exc:
+        rep.fail(f"{rel}/{MANIFEST_NAME}", str(exc))
+        return
+    where = f"{rel}/{MANIFEST_NAME}"
+
+    for key in MANIFEST_KEYS:
+        if meta.get(key) in (None, ""):
+            rep.fail(where, f"missing or empty key '{key}'")
+
+    captured = meta.get("captured")
+    if captured and captured not in MANIFEST_CAPTURED:
+        rep.fail(where, f"captured '{captured}' not one of {sorted(MANIFEST_CAPTURED)}")
+
+    results = meta.get("results")
+    zero_results = results is not None and results.strip() == "0"
+
+    secs = sections(body)
+    for heading in MANIFEST_HEADINGS_ALWAYS:
+        if heading not in secs:
+            rep.fail(where, f"missing section '{heading}'")
+        elif is_empty(secs[heading]):
+            rep.fail(where, f"section '{heading}' is empty; record the exact query")
+    if captured == "partial":
+        if MANIFEST_HEADING_PARTIAL not in secs or is_empty(secs[MANIFEST_HEADING_PARTIAL]):
+            rep.fail(where, f"captured is 'partial' but '{MANIFEST_HEADING_PARTIAL}' does not say what is missing")
+
+    ph = find_placeholders(body) + [
+        v for v in (meta.get(k) for k in MANIFEST_KEYS) if isinstance(v, str) and find_placeholders(v)
+    ]
+    if ph:
+        rep.fail(where, f"contains placeholder text: {_short(ph)}")
+
+    data_files = [
+        p for p in snap.rglob("*")
+        if p.is_file() and p.name != MANIFEST_NAME and not any(s in SKIP_NAMES for s in p.parts)
+    ]
+    data = meta.get("data")
+    if data:
+        # results too large for the repository live in the store
+        if not is_store_path(data):
+            rep.fail(where, f"'data' must be a store path (store:...), got {data!r}")
+        elif check_path(root, data, rep, where, "snapshot data"):
+            _, target, _ = resolve(root, data)
+            if target.is_dir() and not any(p.is_file() for p in target.rglob("*")) and not zero_results:
+                rep.fail(where, f"snapshot data directory {data} is empty")
+    elif not data_files and not zero_results:
+        rep.fail(rel, "snapshot contains no result files; save what the tool returned, or set results: 0")
+
+
+RETRIEVAL_TEMPLATE = """---
+tool: <web search / Horizonary MCP / WoS web UI / CORDIS API / ...>
+source: <database or site queried>
+retrieved: {now}
+results: <number of hits reported by the source, or n/a>
+captured: <full | partial>
+task: <tNNNN that ran this retrieval>
+---
+
+## Query
+```
+<the exact query string, filters and parameters, verbatim>
+```
+
+## Not captured
+<only if captured is partial: what was returned but not saved, and why>
+
+## Notes
+<anything a reader needs to interpret the files in this directory>
+"""
+
+
+def new_retrieval(root: Path, slug: str) -> int:
+    slug = re.sub(r"[^a-z0-9-]+", "-", slug.lower()).strip("-")
+    if not slug:
+        print("usage: rlcheck.py retrieval <slug>")
+        return 2
+    today = _dt.date.today().isoformat()
+    snap = root / RETRIEVED_DIR / f"{today}-{slug}"
+    if snap.exists():
+        print(f"already exists: {snap.relative_to(root).as_posix()}")
+        return 1
+    snap.mkdir(parents=True)
+    now = _dt.datetime.now().replace(microsecond=0).isoformat()
+    write_lf(snap / MANIFEST_NAME, RETRIEVAL_TEMPLATE.format(now=now))
+    rel = snap.relative_to(root).as_posix()
+    print(f"created {rel}/{MANIFEST_NAME}")
+    print("next: save the raw results in this directory, fill in the manifest,")
+    print(f"      and add '{rel}' to the task record's inputs and retrievals.")
+    return 0
+
+
 # --------------------------------------------------------------------------
 # Records
 # --------------------------------------------------------------------------
@@ -161,82 +940,251 @@ def find_records(root: Path):
     return sorted(p / RECORD_NAME for p in tasks.iterdir() if (p / RECORD_NAME).is_file())
 
 
-def load_record(path: Path):
+def _in_inbox(rel: str) -> bool:
+    if not is_store_path(rel):
+        return False
+    inner = _norm(rel[len(STORE_PREFIX):])
+    return inner == STORE_INBOX or inner.startswith(STORE_INBOX + "/")
+
+
+def _input_paths(meta):
+    return [i["path"] for i in meta.get("inputs") or [] if isinstance(i, dict) and "path" in i]
+
+
+def check_record(root: Path, path: Path, rep: Report, decision_ids, limitation_ids, seen_ids):
+    rel = path.relative_to(root).as_posix()
+    try:
+        meta, body = load_md(path)
+    except ValueError as exc:
+        rep.fail(rel, str(exc))
+        return
+
+    for key in REQUIRED_KEYS:
+        if key not in meta or meta[key] in (None, "", []):
+            rep.fail(rel, f"missing or empty front-matter key '{key}'")
+
+    status = meta.get("status")
+    if status and status not in ALLOWED_STATUS:
+        rep.fail(rel, f"status '{status}' not one of {sorted(ALLOWED_STATUS)}")
+    complete = status == "complete"
+    if complete and not meta.get("closed"):
+        rep.fail(rel, "status is 'complete' but 'closed' date is missing")
+    if complete and not meta.get(PERFORMED_BY):
+        rep.fail(rel, f"complete record must say who performed the work ('{PERFORMED_BY}:', "
+                      "e.g. the researcher, or the model and environment)")
+
+    # --- dates come from the computer, and must make sense
+    dates = {}
+    for key in ("opened", "closed", "checkpoint"):
+        value = meta.get(key)
+        if value:
+            d = _date_of(value)
+            if d is None:
+                rep.fail(rel, f"'{key}' {value!r} is not an ISO date")
+            else:
+                dates[key] = d
+                if d > today() + _dt.timedelta(days=1):
+                    rep.warn(rel, f"'{key}' {value} is after today ({today()}); take dates from the computer")
+    if "opened" in dates and "closed" in dates and dates["closed"] < dates["opened"]:
+        rep.fail(rel, f"closed {meta['closed']} is before opened {meta['opened']}")
+
+    resealed = meta.get("resealed")
+    if resealed is not None:
+        if not isinstance(resealed, list):
+            rep.fail(rel, "'resealed' must be a list written by 'rlcheck seal'")
+        else:
+            for item in resealed:
+                if not isinstance(item, dict) or item.get("kind") not in RESEAL_KINDS:
+                    rep.fail(rel, f"malformed 'resealed' entry {item!r}")
+                    continue
+                did = item.get("decision", "")
+                if decision_ids is not None and did not in decision_ids:
+                    rep.fail(rel, f"'resealed' entry refers to {did!r}, which is not in {DECISIONS_LOG}")
+
+    rid = meta.get("id")
+    if rid:
+        if rid in seen_ids:
+            rep.fail(rel, f"duplicate id '{rid}' (also in {seen_ids[rid]})")
+        seen_ids[rid] = rel
+
+    # --- structure and substance of the body
+    secs = sections(body)
+    for heading in REQUIRED_HEADINGS:
+        if heading not in secs:
+            rep.fail(rel, f"missing section '{heading}'")
+
+    question = secs.get("## Question", "")
+    if "## Question" in secs and (is_empty(question) or find_placeholders(question)):
+        rep.fail(rel, "'## Question' must state the question before the task is opened")
+
+    if status == "in-progress":
+        # An open task must be resumable at any moment: its Handoff states
+        # where the work stands and the checkpoint says when that was true.
+        handoff = secs.get("## Handoff", "")
+        if "## Handoff" in secs and (is_empty(handoff) or find_placeholders(handoff)):
+            rep.fail(rel, "task is in progress but '## Handoff' does not state where the work stands")
+        cp = meta.get("checkpoint")
+        if not cp:
+            rep.fail(rel, "task is in progress but has no 'checkpoint:' time")
+        elif parse_time(cp) is None:
+            rep.fail(rel, f"checkpoint {cp!r} is not an ISO date or date-time")
+
+    if complete:
+        for heading in REQUIRED_HEADINGS:
+            if heading in secs and is_empty(secs[heading]):
+                rep.fail(rel, f"section '{heading}' is empty; write its content, or 'None.' with a reason")
+        ph = find_placeholders(body)
+        if ph:
+            rep.fail(rel, f"placeholder text left in a complete record: {_short(ph)}")
+
+    # --- inputs and outputs
+    inputs = _input_paths(meta)
+    for item in meta.get("inputs") or []:
+        if not isinstance(item, dict) or "path" not in item:
+            rep.fail(rel, f"every input needs a 'path' field, got {item!r}")
+            continue
+        if _in_inbox(item["path"]):
+            rep.fail(rel, f"input {item['path']} is in the inbox; catalogue it into store:sources/ first")
+            continue
+        check_path(root, item["path"], rep, rel, "input path")
+
+    for out in meta.get("outputs") or []:
+        out_path = out["path"] if isinstance(out, dict) else out
+        if is_store_path(out_path):
+            first = _norm(out_path[len(STORE_PREFIX):]).split("/", 1)[0]
+            if first not in STORE_OUTPUT_ROOTS:
+                rep.fail(rel, f"output {out_path}: outputs in the store belong in sources/ "
+                              "(catalogued sources), work/ (large intermediates) or exports/")
+        check_path(root, out_path, rep, rel, "declared output", missing_is_fail=complete)
+
+    # --- declarations: decisions, limitations, retrievals
+    for key in DECLARATION_KEYS:
+        value = meta.get(key)
+        if value is not None and not isinstance(value, list):
+            rep.fail(rel, f"'{key}' must be a list, e.g. '{key}: []' or '{key}: [X001, X002]'")
+        elif complete and key not in meta:
+            rep.fail(rel, f"complete record must declare '{key}' (use '{key}: []' if there are none)")
+        elif complete and value is None:
+            rep.fail(rel, f"'{key}' is blank; use '{key}: []' if there are none")
+
+    for did in meta.get("decisions") or []:
+        if not isinstance(did, str) or not DECISION_ID.match(did):
+            rep.fail(rel, f"'decisions' entry {did!r} is not an id like D012")
+        elif decision_ids is None:
+            rep.fail(rel, f"refers to {did} but {DECISIONS_LOG} does not exist")
+        elif did not in decision_ids:
+            rep.fail(rel, f"refers to {did}, which is not in {DECISIONS_LOG}")
+
+    for lid in meta.get("limitations") or []:
+        if not isinstance(lid, str) or not LIMITATION_ID.match(lid):
+            rep.fail(rel, f"'limitations' entry {lid!r} is not an id like L004")
+        elif limitation_ids is None:
+            rep.fail(rel, f"refers to {lid} but {LIMITATIONS} does not exist")
+        elif lid not in limitation_ids:
+            rep.fail(rel, f"refers to {lid}, which is not in {LIMITATIONS}")
+
+    for snap in meta.get("retrievals") or []:
+        snap_path = snap["path"] if isinstance(snap, dict) else snap
+        if not isinstance(snap_path, str):
+            rep.fail(rel, f"'retrievals' entry {snap!r} is not a path")
+            continue
+        if not _norm(snap_path).startswith(RETRIEVED_DIR + "/"):
+            rep.fail(rel, f"retrieval {snap_path} is not under {RETRIEVED_DIR}/")
+        manifest = root / snap_path / MANIFEST_NAME
+        if not manifest.is_file():
+            rep.fail(rel, f"retrieval {snap_path} has no {MANIFEST_NAME}")
+        if not covered_by(snap_path, inputs):
+            rep.fail(rel, f"retrieval {snap_path} is not among the inputs, so its digest is not tracked")
+        if manifest.is_file():
+            try:
+                data = load_md(manifest)[0].get("data")
+            except ValueError:
+                data = None
+            if data and not covered_by(data, inputs):
+                rep.fail(rel, f"retrieval {snap_path} keeps its data in {data}, which is not among the inputs")
+    return meta
+
+
+def _doc_date(root: Path, rel: str, label: str):
+    path = root / rel
+    if not path.is_file():
+        return None, None
     text = path.read_text(encoding="utf-8")
-    meta, end = parse_front_matter(text)
-    body = "\n".join(text.splitlines()[end + 1 :])
-    return meta, body
+    m = re.search(r"\*\*" + label + r"\.\*\*\s*(\d{4}-\d{2}-\d{2})", text)
+    return text, (_date_of(m.group(1)) if m else None)
+
+
+def check_currency(root: Path, rep: Report, metas, entries):
+    """Warn when living documents look older than the work they describe."""
+    activity = []
+    for m in metas:
+        if m.get("status") == "complete" and _date_of(m.get("closed")):
+            activity.append((_date_of(m.get("closed")), f"task {m.get('id')} closed"))
+    for e in entries or []:
+        if _date_of(e["date"]):
+            activity.append((_date_of(e["date"]), f"decision {e['id']}"))
+    latest = max(activity) if activity else None
+
+    plan_text, plan_date = _doc_date(root, PLAN, "Updated")
+    if plan_text is not None:
+        if plan_date is None and latest:
+            rep.warn(PLAN, "has no '**Updated.** YYYY-MM-DD' line; rewrite the plan and date it")
+        elif plan_date and latest and plan_date < latest[0]:
+            rep.warn(PLAN, f"last updated {plan_date}, but {latest[1]} on {latest[0]}; "
+                           "rewrite it to state what is true now")
+        done = {m.get("id") for m in metas if m.get("status") in ("complete", "superseded")}
+        nxt = sections(plan_text).get("## Next", "")
+        stale_refs = sorted(set(re.findall(r"\bt\d{4}\b", nxt)) & done)
+        if stale_refs:
+            rep.warn(PLAN, f"'## Next' names finished task(s) {', '.join(stale_refs)}")
+
+    readme_text, readme_date = _doc_date(root, "README.md", "Last updated")
+    if readme_text is not None and plan_date and (readme_date is None or readme_date < plan_date):
+        rep.warn("README.md", f"'Last updated' is {readme_date or 'missing'}, the plan is from "
+                              f"{plan_date}; check that its State section is current")
 
 
 def validate(root: Path) -> int:
+    rep = Report()
+    decision_ids = check_decisions(root, rep)
+    limitation_ids = check_limitations(root, rep)
+    check_append_only(root, rep)
+
+    snapshots = find_snapshots(root)
+    for snap in snapshots:
+        check_snapshot(root, snap, rep)
+
     records = find_records(root)
-    if not records:
-        print(f"no task records found under {TASKS_DIR}/")
-        return 0
-
-    problems = 0
     seen_ids = {}
+    metas = []
     for path in records:
-        rel = path.relative_to(root).as_posix()
-        try:
-            meta, body = load_record(path)
-        except ValueError as exc:
-            print(f"FAIL {rel}: {exc}")
-            problems += 1
-            continue
+        meta = check_record(root, path, rep, decision_ids, limitation_ids, seen_ids)
+        if meta:
+            metas.append(meta)
+    check_currency(root, rep, metas, load_decisions(root)[1])
 
-        for key in REQUIRED_KEYS:
-            if key not in meta or meta[key] in (None, "", []):
-                print(f"FAIL {rel}: missing or empty front-matter key '{key}'")
-                problems += 1
-
-        status = meta.get("status")
-        if status and status not in ALLOWED_STATUS:
-            print(f"FAIL {rel}: status '{status}' not one of {sorted(ALLOWED_STATUS)}")
-            problems += 1
-        if status == "complete" and not meta.get("closed"):
-            print(f"FAIL {rel}: status is 'complete' but 'closed' date is missing")
-            problems += 1
-
-        rid = meta.get("id")
-        if rid:
-            if rid in seen_ids:
-                print(f"FAIL {rel}: duplicate id '{rid}' (also in {seen_ids[rid]})")
-                problems += 1
-            seen_ids[rid] = rel
-
-        for heading in REQUIRED_HEADINGS:
-            if heading not in body:
-                print(f"FAIL {rel}: missing section '{heading}'")
-                problems += 1
-
-        for item in meta.get("inputs") or []:
-            if not isinstance(item, dict) or "path" not in item:
-                print(f"FAIL {rel}: every input needs a 'path' field, got {item!r}")
-                problems += 1
-                continue
-            if not (root / item["path"]).exists():
-                print(f"FAIL {rel}: input path does not exist: {item['path']}")
-                problems += 1
-
-        for out in meta.get("outputs") or []:
-            out_path = out["path"] if isinstance(out, dict) else out
-            if not (root / out_path).exists():
-                print(f"WARN {rel}: declared output does not exist: {out_path}")
-
-    print(f"\n{len(records)} record(s) checked, {problems} problem(s).")
-    return 1 if problems else 0
+    print(
+        f"\ntoday: {today()} (the date on this computer; use it for anything you date)\n"
+        f"{len(records)} record(s), {len(decision_ids or [])} decision(s), "
+        f"{len(snapshots)} snapshot(s) checked: {rep.fails} problem(s), {rep.warns} warning(s)."
+    )
+    unchecked = getattr(rep, "unchecked", 0)
+    if unchecked:
+        print(f"{unchecked} store path(s) not checked: {STORE.reason}.")
+    return 1 if rep.fails else 0
 
 
 def stale(root: Path) -> int:
     records = find_records(root)
     drifted = 0
     unsealed = 0
+    unavailable = 0
+    errors = 0
 
     for path in records:
         rel = path.relative_to(root).as_posix()
         try:
-            meta, _ = load_record(path)
+            meta, _ = load_md(path)
         except ValueError as exc:
             print(f"FAIL {rel}: {exc}")
             drifted += 1
@@ -254,48 +1202,200 @@ def stale(root: Path) -> int:
                 unsealed += 1
                 continue
             current = digest(root, item["path"])
-            if current != recorded:
+            if current == "unavailable":
+                unavailable += 1
+                continue
+            if current == "error":
+                if not errors:
+                    print(f"FAIL {STORE.reason}")
+                errors += 1
+                continue
+            if current == "missing":
+                print(f"MISSING {rel}")
+                print(f"       input:    {item['path']}")
+                print(f"       recorded: {recorded}")
+                drifted += 1
+            elif current != recorded:
                 print(f"STALE {rel}")
                 print(f"       input:    {item['path']}")
                 print(f"       recorded: {recorded}")
                 print(f"       current:  {current}")
                 drifted += 1
 
-    total = len(records)
-    print(f"\n{total} record(s) checked, {drifted} stale, {unsealed} unsealed input(s).")
-    return 1 if drifted or unsealed else 0
+    print(f"\n{len(records)} record(s) checked, {drifted} stale or missing, {unsealed} unsealed input(s).")
+    if unavailable:
+        print(f"{unavailable} store input(s) not checked: {STORE.reason}.")
+    if errors:
+        print(f"{errors} store input(s) could not be checked because the store is misconfigured.")
+    return 1 if drifted or unsealed or errors else 0
 
 
-def seal(root: Path, task_dir: str) -> int:
+def seal(root: Path, task_dir: str, args=()) -> int:
+    """Write current digests for every input of one record.
+
+    Touches only the 'inputs' block of the front matter (and, for a finished
+    record, the 'resealed' trace). An input item without a digest line gets
+    one. In a complete or superseded record a digest may only change with
+    --rerun D012 (the work was redone) or --accept D012 (the old result was
+    accepted for the new input); either way the change is recorded under
+    'resealed', so the record never claims a result came from inputs it did
+    not see.
+    """
+    try:
+        opts = _parse_opts(list(args), {"--rerun": True, "--accept": True})
+    except ValueError as exc:
+        print(f"seal: {exc}")
+        return 2
+    if len(opts) > 1:
+        print("seal: give either --rerun or --accept, not both")
+        return 2
+    kind, why = None, None
+    if "--rerun" in opts:
+        kind, why = "rerun", opts["--rerun"]
+    elif "--accept" in opts:
+        kind, why = "accepted", opts["--accept"]
+    if why is not None:
+        _, entries = load_decisions(root)
+        if not DECISION_ID.match(why) or not entries or why not in {e["id"] for e in entries}:
+            print(f"seal: {why} is not a decision in {DECISIONS_LOG}; log the decision first")
+            return 1
+
     path = (root / task_dir / RECORD_NAME) if (root / task_dir).is_dir() else (root / task_dir)
     if not path.is_file():
         print(f"no record found at {path}")
         return 1
 
     text = path.read_text(encoding="utf-8")
+    try:
+        meta, end = parse_front_matter(text)
+    except ValueError as exc:
+        print(f"FAIL {path}: {exc}")
+        return 1
+    finished = meta.get("status") in ("complete", "superseded")
     lines = text.splitlines()
+    changes = []  # (input path, old digest, new digest)
 
-    updated = 0
-    current_input_path = None
     out = []
-    for line in lines:
-        stripped = line.strip()
-        if stripped.startswith("- path:"):
-            current_input_path = _strip_quotes(stripped.split(":", 1)[1])
+    updated = 0
+    in_inputs = False
+    pending = None  # (input path, indent of its fields)
+
+    skipped = []
+
+    def sealed_value(rel, old):
+        """The digest to write, or the old value if the input cannot be read."""
+        nonlocal updated
+        new = digest(root, rel)
+        if new in ("unavailable", "error", "missing"):
+            skipped.append((rel, new))
+            print(f"  {rel} -> NOT SEALED ({new})")
+            return old
+        if old and old != new:
+            changes.append((rel, old, new))
+        print(f"  {rel} -> {new}")
+        updated += 1
+        return new
+
+    def flush():
+        nonlocal pending
+        if pending:
+            rel, ind = pending
+            out.append(f"{' ' * ind}digest: {sealed_value(rel, '')}".rstrip())
+            pending = None
+
+    for idx, line in enumerate(lines):
+        if idx == 0 or idx > end:
             out.append(line)
             continue
-        if stripped.startswith("digest:") and current_input_path:
-            indent = " " * (len(line) - len(line.lstrip(" ")))
-            new = digest(root, current_input_path)
-            out.append(f"{indent}digest: {new}")
-            print(f"  {current_input_path} -> {new}")
-            updated += 1
-            current_input_path = None
+        if idx == end:
+            flush()
+            out.append(line)
             continue
+
+        stripped = line.strip()
+        indent = len(line) - len(line.lstrip(" "))
+
+        if stripped and indent == 0:
+            flush()
+            in_inputs = stripped.split(":", 1)[0].strip() == "inputs"
+            out.append(line)
+            continue
+
+        if in_inputs and stripped.startswith("- "):
+            flush()
+            item = stripped[2:].strip()
+            if item.startswith("path:"):
+                pending = (_strip_quotes(item.split(":", 1)[1]), indent + 2)
+            out.append(line)
+            continue
+
+        if in_inputs and pending and stripped.startswith("digest:"):
+            rel, _ = pending
+            old = stripped.split(":", 1)[1].strip()
+            out.append(f"{' ' * indent}digest: {sealed_value(rel, old)}".rstrip())
+            pending = None
+            continue
+
         out.append(line)
 
-    path.write_text("\n".join(out) + "\n", encoding="utf-8")
+    if finished and changes and kind is None:
+        print(f"\nNOT WRITTEN: {path} is {meta.get('status')}, and these inputs changed since it was sealed:")
+        for rel, old, new in changes:
+            print(f"  {rel}")
+        print("A finished record must not silently claim it was made from the new inputs.")
+        print("Decide with the user, log the decision, then run one of:")
+        print(f"  seal {task_dir} --rerun D0NN    the work was redone with the new inputs")
+        print(f"  seal {task_dir} --accept D0NN   the old result stands for the new inputs")
+        return 1
+
+    if finished and changes:
+        trace = []
+        for rel, old, new in changes:
+            trace += [
+                f"  - path: {rel}",
+                f"    kind: {kind}",
+                f"    decision: {why}",
+                f"    date: {today()}",
+                f"    was: {old}",
+                f"    now: {new}",
+            ]
+        fence = next(i for i in range(1, len(out)) if out[i].strip() == "---")
+        at = None
+        for i in range(1, fence):
+            if out[i].split(":", 1)[0].strip() == "resealed" and not out[i].startswith(" "):
+                out[i] = "resealed:"
+                at = i + 1
+                while at < fence and (not out[at].strip() or out[at].startswith(" ")):
+                    at += 1
+                break
+        if at is None:
+            out[fence:fence] = ["resealed:"] + trace
+        else:
+            out[at:at] = trace
+        print(f"recorded {len(changes)} change(s) under 'resealed' ({kind}, {why})")
+
+    write_lf(path, "\n".join(out) + "\n")
     print(f"sealed {updated} input digest(s) in {path}")
+    if skipped:
+        print(f"{len(skipped)} input(s) left unsealed; their previous digest, if any, was kept.")
+        if any(state == "unavailable" for _, state in skipped):
+            print(f"  {STORE.reason}")
+        return 1
+    return 0
+
+
+def decisions(root: Path) -> int:
+    text, entries = load_decisions(root)
+    if text is None:
+        print(f"no {DECISIONS_LOG} yet; nothing to derive")
+        return 0
+    content = render_in_force(entries, digest(root, DECISIONS_LOG))
+    target = root / DECISIONS_IN_FORCE
+    target.parent.mkdir(parents=True, exist_ok=True)
+    write_lf(target, content)
+    ids = {e["id"] for e in entries}
+    superseded = {old for e in entries for old in e["supersedes"]} & ids
+    print(f"wrote {DECISIONS_IN_FORCE}: {len(ids) - len(superseded)} in force, {len(superseded)} superseded")
     return 0
 
 
@@ -303,9 +1403,10 @@ def status(root: Path) -> int:
     records = find_records(root)
     counts = {}
     open_records = []
+    in_progress = []
     for path in records:
         try:
-            meta, _ = load_record(path)
+            meta, body = load_md(path)
         except ValueError:
             counts["unparseable"] = counts.get("unparseable", 0) + 1
             continue
@@ -313,7 +1414,16 @@ def status(root: Path) -> int:
         counts[st] = counts.get(st, 0) + 1
         if st in ("planned", "in-progress"):
             open_records.append(f"  {meta.get('id')} {meta.get('title')} [{st}]")
+        if st == "in-progress":
+            in_progress.append((path, meta, sections(body).get("## Handoff", "").strip()))
 
+    if in_progress:
+        print("research-log: a task is in progress. Before continuing it, read its")
+        print("record.md. The record, not your memory or a conversation summary, is")
+        print("the state of the work.")
+        print()
+
+    print(f"today: {today()} (the date on this computer; use it for anything you date)")
     print(f"project: {root}")
     print(f"records: {len(records)}")
     for key in sorted(counts):
@@ -321,27 +1431,642 @@ def status(root: Path) -> int:
     if open_records:
         print("open:")
         print("\n".join(open_records))
+    for path, meta, handoff in in_progress:
+        print()
+        print(f"in progress: {meta.get('id')} {meta.get('title')}")
+        print(f"  record:     {path.relative_to(root).as_posix()}")
+        print(f"  checkpoint: {meta.get('checkpoint') or 'none recorded'}")
+        print("  handoff:")
+        for line in (handoff or "(empty)").splitlines():
+            print(f"    {line}")
+
+    text, entries = load_decisions(root)
+    if entries:
+        ids = {e["id"] for e in entries}
+        superseded = {old for e in entries for old in e["supersedes"]} & ids
+        print(f"decisions: {len(ids) - len(superseded)} in force, {len(superseded)} superseded")
+        waiting = awaiting_confirmation(entries)
+        if waiting:
+            print(f"  provisional, awaiting confirmation: {', '.join(waiting)}")
+        derived = root / DECISIONS_IN_FORCE
+        expected = render_in_force(entries, digest(root, DECISIONS_LOG))
+        if not derived.is_file() or derived.read_text(encoding="utf-8") != expected:
+            print(f"  {DECISIONS_IN_FORCE} is out of date: run 'rlcheck.py decisions'")
+    print(f"retrieval snapshots: {len(find_snapshots(root))}")
+    print(f"rlcheck: {__version__}")
+    if STORE.state == "ok":
+        print(f"store: {STORE.id} at {STORE.path}")
+    elif STORE.state != "none":
+        print(f"store: {STORE.reason}; run 'rlcheck.py doctor'")
+    return 0
+
+
+# --------------------------------------------------------------------------
+# Setup: init, doctor, claude-settings, where
+# --------------------------------------------------------------------------
+
+SKELETON = {
+    "methodology/00-brief.md": (
+        "# Brief\n\n## As received (YYYY-MM-DD)\n\n## Agreed scope\n"
+        "**In scope.**\n**Out of scope.**\n**Deliverable.**\n\n## Amendments\n"
+    ),
+    "methodology/10-plan.md": (
+        "# Plan\n\n**Updated.** YYYY-MM-DD\n\n## Phases\n\n## Now\n\n## Next\n\n## Deferred\n\n"
+        "## Proposed\n"
+    ),
+    "methodology/20-decisions.md": "# Decisions\n",
+    "methodology/30-limitations.md": (
+        "# Limitations and gaps\n\n"
+        "| ID | Raised | Description | Affects | Status | Resolution |\n"
+        "|----|--------|-------------|---------|--------|------------|\n"
+    ),
+    "methodology/40-insights.md": "# Insights for the output\n",
+}
+SKELETON_DIRS = [TASKS_DIR, RETRIEVED_DIR]
+
+
+def _script_command() -> str:
+    return f'python "{Path(__file__).resolve()}"'
+
+
+def _parse_opts(args, spec):
+    """Tiny option parser: spec maps '--name' to True if it takes a value."""
+    opts = {}
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a not in spec:
+            raise ValueError(f"unknown option {a!r}")
+        if spec[a]:
+            if i + 1 >= len(args):
+                raise ValueError(f"option {a} needs a value")
+            opts[a] = args[i + 1]
+            i += 2
+        else:
+            opts[a] = True
+            i += 1
+    return opts
+
+
+def _gitignore_missing(root: Path):
+    path = root / ".gitignore"
+    have = set()
+    if path.is_file():
+        have = {line.strip() for line in path.read_text(encoding="utf-8").splitlines()}
+    return [line for line in GITIGNORE_LINES if line not in have]
+
+
+def _ensure_gitignore(root: Path):
+    missing = _gitignore_missing(root)
+    if not missing:
+        return []
+    path = root / ".gitignore"
+    text = path.read_text(encoding="utf-8") if path.is_file() else ""
+    if text and not text.endswith("\n"):
+        text += "\n"
+    text += "# research-log: machine-local files\n" + "".join(line + "\n" for line in missing)
+    write_lf(path, text)
+    return missing
+
+
+def _gitattributes_ok(root: Path) -> bool:
+    path = root / ".gitattributes"
+    if not path.is_file():
+        return False
+    return GITATTRIBUTES_LINE in {line.strip() for line in path.read_text(encoding="utf-8").splitlines()}
+
+
+def _ensure_gitattributes(root: Path) -> bool:
+    if _gitattributes_ok(root):
+        return False
+    path = root / ".gitattributes"
+    text = path.read_text(encoding="utf-8") if path.is_file() else ""
+    if text and not text.endswith("\n"):
+        text += "\n"
+    text += ("# research-log: store text with LF everywhere, so that records,\n"
+             "# diffs and digests are the same on every machine\n"
+             f"{GITATTRIBUTES_LINE}\n")
+    write_lf(path, text)
+    return True
+
+
+def _version_of(path: Path):
+    """The __version__ declared in a copy of rlcheck.py, or None."""
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.startswith("__version__"):
+                return line.split("=", 1)[1].strip().strip("\"'")
+    except OSError:
+        pass
+    return None
+
+
+def _project_tool(root: Path) -> Path:
+    """The copy of rlcheck the project uses: its own if it has one."""
+    copy = root / TOOL_COPY
+    return copy.resolve() if copy.is_file() else Path(__file__).resolve()
+
+
+def _running_from_skill() -> bool:
+    """True when this copy is the one inside the skill, not a download or the project's."""
+    here = Path(__file__).resolve()
+    return here.parent.name == "scripts" and (here.parent.parent / "SKILL.md").is_file()
+
+
+def _crlf_files(root: Path):
+    """Text files of the project whose working copy has CRLF line endings."""
+    found = []
+    for path in sorted(root.rglob("*")):
+        rel = path.relative_to(root)
+        if any(part in SKIP_NAMES for part in rel.parts) or rel.name == CACHE_FILE:
+            continue
+        if not path.is_file() or path.suffix.lower() not in TEXT_SUFFIXES:
+            continue
+        try:
+            data = path.read_bytes()
+        except OSError:
+            continue
+        if b"\0" not in data[:8192] and b"\r\n" in data:
+            found.append(path)
+    return found
+
+
+def _uses_claude_code(root: Path) -> bool:
+    claude = root / ".claude"
+    return (claude / "settings.json").is_file() or (claude / "settings.local.json").is_file()
+
+
+def _read_local(root: Path):
+    """All values of research-log.local.ini as {(section, key): value}."""
+    path = root / LOCAL_CONFIG
+    vals = {}
+    if path.is_file():
+        ini = _read_ini(path)
+        for sec in ini.sections():
+            for k, v in ini.items(sec):
+                vals[(sec, k)] = v
+    return vals
+
+
+def _write_local(root: Path, vals):
+    lines = ["# Local to this machine; never commit this file.", ""]
+    if vals.get(("store", "path")):
+        lines += [
+            "# Where the shared store of this project is on this computer.",
+            "[store]",
+            f"path = {vals[('store', 'path')]}",
+            "",
+        ]
+    tools = sorted((k, v) for (sec, k), v in vals.items() if sec == "tools")
+    if tools:
+        lines += [
+            "# How to run rlcheck on this computer. Claude reads this to give you the",
+            "# exact command when it cannot run the script itself (e.g. in Claude.ai).",
+            "[tools]",
+        ] + [f"{k} = {v}" for k, v in tools] + [""]
+    for sec in sorted({sec for sec, _ in vals} - {"store", "tools"}):
+        lines.append(f"[{sec}]")
+        lines += [f"{k} = {v}" for (s2, k), v in sorted(vals.items()) if s2 == sec]
+        lines.append("")
+    write_lf(root / LOCAL_CONFIG, "\n".join(lines))
+
+
+def _this_tool(root: Path):
+    return {
+        ("tools", "python"): str(Path(sys.executable).resolve()),
+        ("tools", "rlcheck"): str(_project_tool(root)),
+    }
+
+
+def is_project_root(root: Path) -> bool:
+    return (root / CONFIG).is_file() or (root / "PROFILE.md").is_file() or (root / "methodology").is_dir()
+
+
+NOT_A_PROJECT = """not a research-log project: {root}
+Run rlcheck from the project root, the folder that contains research-log.ini.
+If you are an AI assistant running this in your own sandbox: that is not the
+user's computer, and nothing checked here says anything about their project.
+Give the user the command to run instead."""
+
+
+def init(root: Path, args) -> int:
+    try:
+        opts = _parse_opts(args, {"--id": True, "--store": True, "--adopt": False,
+                                  "--update-tool": False, "--fix-line-endings": False})
+    except ValueError as exc:
+        print(f"init: {exc}")
+        return 2
+    done = []
+
+    existing = Store(root).id
+    pid = opts.get("--id")
+    if existing and pid and pid != existing:
+        print(f"init: {CONFIG} already names this project '{existing}'; refusing to change it to '{pid}'")
+        return 1
+    if not existing:
+        if not pid:
+            print(f"init: this project has no {CONFIG} yet. Give it an id:")
+            print(f"      {_script_command()} init --id <project-id> [--store <path>]")
+            return 2
+        if not PROJECT_ID.match(pid):
+            print("init: the id must be 2-63 characters: lower-case letters, digits and hyphens")
+            return 2
+        write_lf(
+            root / CONFIG,
+            "# research-log project configuration. Shared through git.\n"
+            f"# Each machine says where the store is in {LOCAL_CONFIG}, which is not in git.\n"
+            f"[store]\nid = {pid}\n",
+        )
+        done.append(f"wrote {CONFIG} (project id '{pid}')")
+    pid = existing or pid
+
+    for rel, content in SKELETON.items():
+        target = root / rel
+        if not target.exists():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            write_lf(target, content)
+            done.append(f"created {rel}")
+    for rel in SKELETON_DIRS:
+        target = root / rel
+        if not target.exists():
+            target.mkdir(parents=True)
+            write_lf(target / ".gitkeep", "")
+            done.append(f"created {rel}/")
+
+    added = _ensure_gitignore(root)
+    if added:
+        done.append(f"added to .gitignore: {', '.join(added)}")
+    if _ensure_gitattributes(root):
+        done.append(f"added to .gitattributes: {GITATTRIBUTES_LINE}")
+
+    here = Path(__file__).resolve()
+    copy = root / TOOL_COPY
+    # A downloaded copy is disposable once installed; the skill's own copy is not.
+    disposable = "" if _running_from_skill() else f" The copy you ran ({here}) can be deleted."
+    if not copy.exists():
+        copy.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(here, copy)
+        done.append(f"copied rlcheck {__version__} to {TOOL_COPY} (versioned with the project); "
+                    f"from now on run it from there.{disposable}")
+    elif copy.resolve() != here:
+        old = _version_of(copy)
+        if "--update-tool" in opts:
+            shutil.copy2(here, copy)
+            done.append(f"updated {TOOL_COPY} from {old} to {__version__}; log this in "
+                        f"{DECISIONS_LOG} as a decision that supersedes the one for {old}, "
+                        f"then run check and reseal what it reports.{disposable}")
+        elif old != __version__:
+            done.append(f"note: {TOOL_COPY} is {old}, this is {__version__}; "
+                        "rerun with --update-tool to replace it")
+
+    if "--fix-line-endings" in opts:
+        fixed = _crlf_files(root)
+        for path in fixed:
+            path.write_bytes(path.read_bytes().replace(b"\r\n", b"\n"))
+        if fixed:
+            done.append(f"converted {len(fixed)} text file(s) from CRLF to LF")
+
+    if "--store" in opts:
+        sp = Path(opts["--store"]).expanduser()
+        if not sp.is_absolute():
+            sp = (root / sp).resolve()
+        if sp.exists() and not sp.is_dir():
+            print(f"init: {sp} is a file, not a directory")
+            return 1
+        marker = read_marker(sp) if sp.is_dir() else None
+        if marker and marker != pid:
+            print(f"init: {sp} is the store of project '{marker}', not '{pid}'")
+            return 1
+        if marker is None:
+            if sp.is_dir() and any(sp.iterdir()) and "--adopt" not in opts:
+                print(f"init: {sp} is not empty and has no {STORE_MARKER}.")
+                print("      If this really is the store of this project, rerun with --adopt.")
+                return 1
+            sp.mkdir(parents=True, exist_ok=True)
+            write_lf(sp / STORE_MARKER, f"research-log store\nid: {pid}\n")
+            done.append(f"marked {sp} as the store of '{pid}'")
+        for d in STORE_DIRS:
+            if not (sp / d).is_dir():
+                (sp / d).mkdir(parents=True)
+                done.append(f"created store {d}/")
+    else:
+        sp = None
+
+    local = _read_local(root)
+    want = _this_tool(root)
+    if sp is not None:
+        want[("store", "path")] = str(sp)
+    changed = [k for k, v in want.items() if local.get(k) != v]
+    if changed:
+        local.update(want)
+        _write_local(root, local)
+        if ("store", "path") in changed:
+            done.append(f"recorded in {LOCAL_CONFIG}: store at {sp}")
+        if any(sec == "tools" for sec, _ in changed):
+            done.append(f"recorded in {LOCAL_CONFIG}: rlcheck at {want[('tools', 'rlcheck')]}")
+
+    if done:
+        print("\n".join(f"  {line}" for line in done))
+    else:
+        print("  nothing to do; the setup files are in place")
+    print(f"next: python {TOOL_COPY} doctor" if (root / TOOL_COPY).is_file()
+          else f"next: {_script_command()} doctor")
+    return 0
+
+
+def _claude_settings_state(root: Path, store: Store):
+    """Return (has_store_access, has_hook, error) for the local Claude Code settings."""
+    path = root / CLAUDE_LOCAL_SETTINGS
+    if not path.is_file():
+        return False, False, None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except ValueError:
+        return False, False, f"{CLAUDE_LOCAL_SETTINGS} is not valid JSON"
+    dirs = (data.get("permissions") or {}).get("additionalDirectories") or []
+    access = bool(store.path) and any(Path(d).expanduser() == store.path for d in dirs if isinstance(d, str))
+    hook = any(
+        Path(__file__).name in (h.get("command") or "")
+        for entry in (data.get("hooks") or {}).get("SessionStart") or []
+        for h in entry.get("hooks") or []
+    )
+    return access, hook, None
+
+
+def doctor(root: Path) -> int:
+    problems = 0
+    cmd = _script_command()
+    uses_claude_code = _uses_claude_code(root)
+
+    def ok(msg):
+        print(f"OK    {msg}")
+
+    def fix(msg, how):
+        nonlocal problems
+        problems += 1
+        print(f"FIX   {msg}")
+        print(f"      -> {how}")
+
+    def note(msg, how=None):
+        print(f"NOTE  {msg}")
+        if how:
+            print(f"      -> {how}")
+
+    print(f"project: {root}")
+    print(f"rlcheck: {__version__} ({Path(__file__).resolve()})")
+    print(f"today:   {today()}\n")
+    if not is_project_root(root):
+        note("this folder is not a research-log project yet",
+             "if it should be, set it up with init; otherwise run doctor from the project root")
+
+    # project basics
+    if any((p / ".git").exists() for p in [root, *root.parents]):
+        ok("git repository")
+    else:
+        fix("not a git repository; living documents have no history", "git init")
+
+    if (root / CONFIG).is_file() and STORE.id:
+        ok(f"{CONFIG} (project id '{STORE.id}')")
+    elif (root / CONFIG).is_file():
+        fix(f"{CONFIG} has no [store] id", f"{cmd} init --id <project-id>")
+    else:
+        fix(f"no {CONFIG}", f"{cmd} init --id <project-id> --store <path to the shared store>")
+
+    missing = [rel for rel in [*SKELETON, *SKELETON_DIRS] if not (root / rel).exists()]
+    if missing:
+        fix(f"missing project files: {', '.join(missing)}", f"{cmd} init")
+    else:
+        ok("methodology documents and task directories")
+
+    if (root / "PROFILE.md").is_file():
+        ok("PROFILE.md")
+    else:
+        fix("no PROFILE.md: the project layer is not written yet",
+            "write it together with Claude, following reference/project-profile.md")
+    if not (root / "README.md").is_file():
+        note("no README.md", "write the router from the template in reference/documents.md")
+
+    gi = _gitignore_missing(root)
+    if gi:
+        fix(f".gitignore does not exclude {', '.join(gi)}", f"{cmd} init")
+    else:
+        ok(".gitignore excludes machine-local files")
+
+    if _gitattributes_ok(root):
+        ok(".gitattributes keeps text files in LF")
+        crlf = _crlf_files(root)
+        if crlf:
+            shown = ", ".join(p.relative_to(root).as_posix() for p in crlf[:3])
+            more = f" (+{len(crlf) - 3} more)" if len(crlf) > 3 else ""
+            fix(f"{len(crlf)} text file(s) still have CRLF line endings: {shown}{more}; "
+                "scripted edits may silently miss them", f"{cmd} init --fix-line-endings")
+    else:
+        fix(".gitattributes does not fix line endings; digests may differ between machines",
+            f"{cmd} init")
+
+    copy = root / TOOL_COPY
+    if not copy.is_file():
+        fix(f"no {TOOL_COPY}: the project has no copy of rlcheck of its own", f"{cmd} init")
+    else:
+        copy_version = _version_of(copy)
+        if copy.resolve() == Path(__file__).resolve() or copy_version == __version__:
+            ok(f"{TOOL_COPY} {copy_version}")
+        else:
+            note(f"{TOOL_COPY} is {copy_version}, this copy of rlcheck is {__version__}",
+                 f"to change the project's version: {cmd} init --update-tool, "
+                 f"then log it in {DECISIONS_LOG}")
+
+    recorded = _read_local(root).get(("tools", "rlcheck"))
+    here = _project_tool(root)
+    if not recorded:
+        fix("where rlcheck is on this machine is not recorded, so Claude cannot give you"
+            " commands when it cannot run them itself", f"{cmd} init")
+    elif Path(recorded) == here:
+        ok(f"rlcheck location recorded in {LOCAL_CONFIG}")
+    elif not Path(recorded).is_file():
+        fix(f"recorded rlcheck location no longer exists: {recorded}", f"{cmd} init")
+    else:
+        note(f"{LOCAL_CONFIG} records rlcheck at {recorded}, but this is {here}",
+             f"{cmd} init to record this copy instead")
+
+    # store
+    if STORE.id:
+        if STORE.state == "ok":
+            ok(f"store '{STORE.id}' at {STORE.path}")
+            absent = [d for d in STORE_DIRS if not (STORE.path / d).is_dir()]
+            if absent:
+                fix(f"store lacks {', '.join(absent)}/", f'{cmd} init --store "{STORE.path}"')
+            inbox = STORE.path / STORE_INBOX
+            if inbox.is_dir():
+                waiting = [p for p in inbox.rglob("*") if p.is_file()]
+                if waiting:
+                    note(f"{len(waiting)} file(s) waiting in the inbox to be catalogued")
+        elif STORE.state == "unmapped":
+            fix(STORE.reason, f'{cmd} init --store "<path to the shared store on this computer>"')
+        elif STORE.state == "unreachable":
+            fix(STORE.reason, "sync or mount the shared folder, or point to where it is: "
+                f'{cmd} init --store "<path>"')
+        else:
+            fix(STORE.reason, f'{cmd} init --store "<path to the store of {STORE.id}>"')
+
+    # Claude Code
+    access, hook, err = _claude_settings_state(root, STORE)
+    report = fix if uses_claude_code else note
+    if err:
+        report(err, f"repair or delete it, then {cmd} claude-settings")
+    else:
+        if STORE.state == "ok":
+            if access:
+                ok("Claude Code may read the store")
+            else:
+                report("Claude Code has no access to the store", f"{cmd} claude-settings")
+        if hook:
+            ok("Claude Code session hook shows status on start, resume and compaction")
+        else:
+            report("no Claude Code session hook", f"{cmd} claude-settings")
+    if not uses_claude_code:
+        note("Claude.ai: give the Filesystem connector access to the project folder"
+             + (f" and to {STORE.path}" if STORE.path else " and to the store"))
+
+    print()
+    print("setup complete." if not problems else f"{problems} thing(s) to fix.")
+    return 1 if problems else 0
+
+
+def claude_settings(root: Path) -> int:
+    path = root / CLAUDE_LOCAL_SETTINGS
+    data = {}
+    if path.is_file():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except ValueError:
+            print(f"FAIL {CLAUDE_LOCAL_SETTINGS} is not valid JSON; repair or delete it first")
+            return 1
+    done = []
+
+    perms = data.setdefault("permissions", {})
+    if STORE.usable:
+        dirs = perms.setdefault("additionalDirectories", [])
+        if not any(isinstance(d, str) and Path(d).expanduser() == STORE.path for d in dirs):
+            dirs.append(str(STORE.path))
+            done.append(f"store access: {STORE.path}")
+        deny = perms.setdefault("deny", [])
+        posix = STORE.path.as_posix().lstrip("/")
+        for tool in ("Edit", "Write"):
+            rule = f"{tool}(//{posix}/sources/**)"
+            if rule not in deny:
+                deny.append(rule)
+                done.append(f"deny rule: {rule}")
+    else:
+        print(f"note: {STORE.reason}; store access not configured")
+    if not perms:
+        del data["permissions"]
+
+    session = data.setdefault("hooks", {}).setdefault("SessionStart", [])
+    has_hook = any(Path(__file__).name in (h.get("command") or "")
+                   for entry in session for h in entry.get("hooks") or [])
+    if not has_hook:
+        py = Path(sys.executable).as_posix()
+        script = _project_tool(root).as_posix()
+        session.append({"hooks": [{
+            "type": "command",
+            "command": f'cd "$CLAUDE_PROJECT_DIR" && "{py}" "{script}" status',
+        }]})
+        done.append("SessionStart hook: rlcheck status")
+
+    if not done:
+        print(f"{CLAUDE_LOCAL_SETTINGS} already up to date")
+        return 0
+    path.parent.mkdir(parents=True, exist_ok=True)
+    write_lf(path, json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+    _ensure_gitignore(root)
+    print(f"updated {CLAUDE_LOCAL_SETTINGS}:")
+    print("\n".join(f"  {line}" for line in done))
+    print("Takes effect in the next Claude Code session; check it there with /permissions and /hooks.")
+    return 0
+
+
+def where(root: Path, rel: str) -> int:
+    state, target, reason = resolve(root, rel)
+    if state != "ok":
+        print(f"{rel}: {reason}")
+        return 1
+    print(target)
+    if not target.exists():
+        print("(does not exist)")
+        return 1
     return 0
 
 
 def main(argv):
+    # Output may be read through a pipe (a hook, a pre-commit run). On Windows
+    # a pipe defaults to the locale code page, which cannot encode everything
+    # a record may contain; UTF-8 keeps it readable everywhere.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
     if len(argv) < 2:
         print(__doc__)
         return 2
+    global STORE, CACHE
     command = argv[1]
     root = Path.cwd()
+    STORE = Store(root)
+    CACHE = DigestCache(root)
+    try:
+        return _dispatch(command, root, argv)
+    finally:
+        CACHE.save()
+
+
+PROJECT_COMMANDS = {
+    "validate", "stale", "check", "status", "seal", "decisions",
+    "retrieval", "where", "claude-settings",
+}
+
+
+def _dispatch(command, root, argv):
+    if command in PROJECT_COMMANDS and not is_project_root(root):
+        print(NOT_A_PROJECT.format(root=root))
+        return 2
+    if command == "version":
+        print(__version__)
+        return 0
+    if command == "doctor":
+        return doctor(root)
+    if command == "init":
+        return init(root, argv[2:])
+    if command == "claude-settings":
+        return claude_settings(root)
+    if command == "where":
+        if len(argv) < 3:
+            print("usage: rlcheck.py where store:<path>")
+            return 2
+        return where(root, argv[2])
 
     if command == "validate":
         return validate(root)
     if command == "stale":
         return stale(root)
+    if command == "check":
+        a = validate(root)
+        print()
+        b = stale(root)
+        return 1 if (a or b) else 0
     if command == "status":
         return status(root)
+    if command == "decisions":
+        return decisions(root)
     if command == "seal":
         if len(argv) < 3:
-            print("usage: rlcheck.py seal <task-dir>")
+            print("usage: rlcheck.py seal <task-dir> [--rerun D012 | --accept D012]")
             return 2
-        return seal(root, argv[2])
+        return seal(root, argv[2], argv[3:])
+    if command == "retrieval":
+        if len(argv) < 3:
+            print("usage: rlcheck.py retrieval <slug>")
+            return 2
+        return new_retrieval(root, argv[2])
 
     print(f"unknown command: {command}")
     print(__doc__)

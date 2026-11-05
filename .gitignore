@@ -1,0 +1,6 @@
+# Packages built for a release (attached to the GitHub release, not committed)
+dist/
+
+# Python
+__pycache__/
+*.pyc
