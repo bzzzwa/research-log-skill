@@ -5,7 +5,7 @@ description: Keep the methodology log and task records of a social-science desk-
 
 # Research Log
 
-**Version.** 2026.11.5 — the same number as `__version__` in
+**Version.** 2026.11.6 — the same number as `__version__` in
 `scripts/rlcheck.py`. If this skill is available to you more than once with
 different versions (for example in the project and in the user's account), tell
 the user which version you are following.
@@ -137,8 +137,10 @@ project's records are checked with; `rlcheck version`, `doctor` and `status`
 print it. Compare it with `__version__` in this skill's `scripts/rlcheck.py`.
 If the skill's is newer, tell the user and offer the update, but do not make
 it unasked: a new version can change what the project is held to and how
-digests are computed. Updating is a decision. Log it in `20-decisions.md`,
-replace the file with `rlcheck init --update-tool` run from the newer copy (in
+digests are computed. Updating is a decision. Log it in `20-decisions.md` with
+`**Supersedes.**` naming the decision that set the previous version, so that
+the in-force view shows one version, not two. Replace the file with
+`rlcheck init --update-tool` run from the newer copy (in
 Claude.ai, handed over for download as described above), then run
 `rlcheck check` and reseal what `stale` reports.
 
@@ -389,6 +391,16 @@ but by what, and following which instructions.
   researcher, or the model with its name and version as you know them and the
   environment (Claude Code, Claude.ai), and whether the researcher reviewed the
   result. `validate` fails on a complete record without it.
+- Write only what you know. You know which model you are and where you run;
+  you do not know what performed work in an earlier session. When you add
+  `performed-by:` to a record closed before the field existed, take it from
+  the record, the decision log or the researcher, write "recorded
+  retrospectively on <date>" and leave out what nobody can confirm.
+- A check done only by a model is not a check by the researcher. When a
+  finding rests on your own verification — a transcription compared with its
+  original, citations matched to pages — and the researcher has not reviewed
+  it, say so in `performed-by:` and log it as an open limitation, so the
+  record does not read as human-verified.
 - When a model performs an analytic step from written instructions — a prompt,
   a coding frame, an extraction template, a list of questions for each document
   — those instructions are a file in the task directory or in `tools/`, and an

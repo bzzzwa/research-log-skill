@@ -16,6 +16,7 @@ in research-log.local.ini.
 Usage:
     python rlcheck.py doctor               check the setup and say how to fix it
     python rlcheck.py init [--id ID] [--store PATH] [--adopt] [--update-tool]
+                           [--fix-line-endings]
                                            create or complete the project setup
     python rlcheck.py version              print the version of this copy
     python rlcheck.py claude-settings      write .claude/settings.local.json for Claude Code
@@ -45,7 +46,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-__version__ = "2026.11.5"
+__version__ = "2026.11.6"
 
 RECORD_NAME = "record.md"
 TASKS_DIR = "tasks"
@@ -71,6 +72,7 @@ GITIGNORE_LINES = [LOCAL_CONFIG, CACHE_FILE, CLAUDE_LOCAL_SETTINGS]
 GITATTRIBUTES_LINE = "* text=auto eol=lf"
 TOOL_COPY = "tools/rlcheck.py"
 CACHE_VERSION = 2
+TEXT_SUFFIXES = {".md", ".txt", ".csv", ".tsv", ".json", ".yaml", ".yml", ".ini", ".py", ".bib"}
 PROJECT_ID = re.compile(r"^[a-z0-9][a-z0-9-]{1,62}$")
 
 REQUIRED_KEYS = ["id", "title", "status", "opened", "inputs", "outputs"]
@@ -1553,6 +1555,30 @@ def _project_tool(root: Path) -> Path:
     return copy.resolve() if copy.is_file() else Path(__file__).resolve()
 
 
+def _running_from_skill() -> bool:
+    """True when this copy is the one inside the skill, not a download or the project's."""
+    here = Path(__file__).resolve()
+    return here.parent.name == "scripts" and (here.parent.parent / "SKILL.md").is_file()
+
+
+def _crlf_files(root: Path):
+    """Text files of the project whose working copy has CRLF line endings."""
+    found = []
+    for path in sorted(root.rglob("*")):
+        rel = path.relative_to(root)
+        if any(part in SKIP_NAMES for part in rel.parts) or rel.name == CACHE_FILE:
+            continue
+        if not path.is_file() or path.suffix.lower() not in TEXT_SUFFIXES:
+            continue
+        try:
+            data = path.read_bytes()
+        except OSError:
+            continue
+        if b"\0" not in data[:8192] and b"\r\n" in data:
+            found.append(path)
+    return found
+
+
 def _uses_claude_code(root: Path) -> bool:
     claude = root / ".claude"
     return (claude / "settings.json").is_file() or (claude / "settings.local.json").is_file()
@@ -1613,7 +1639,8 @@ Give the user the command to run instead."""
 
 def init(root: Path, args) -> int:
     try:
-        opts = _parse_opts(args, {"--id": True, "--store": True, "--adopt": False, "--update-tool": False})
+        opts = _parse_opts(args, {"--id": True, "--store": True, "--adopt": False,
+                                  "--update-tool": False, "--fix-line-endings": False})
     except ValueError as exc:
         print(f"init: {exc}")
         return 2
@@ -1662,21 +1689,30 @@ def init(root: Path, args) -> int:
 
     here = Path(__file__).resolve()
     copy = root / TOOL_COPY
+    # A downloaded copy is disposable once installed; the skill's own copy is not.
+    disposable = "" if _running_from_skill() else f" The copy you ran ({here}) can be deleted."
     if not copy.exists():
         copy.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(here, copy)
         done.append(f"copied rlcheck {__version__} to {TOOL_COPY} (versioned with the project); "
-                    f"from now on run it from there. The copy you ran ({here}) can be deleted.")
+                    f"from now on run it from there.{disposable}")
     elif copy.resolve() != here:
         old = _version_of(copy)
         if "--update-tool" in opts:
             shutil.copy2(here, copy)
             done.append(f"updated {TOOL_COPY} from {old} to {__version__}; log this in "
-                        f"{DECISIONS_LOG}, then run check and reseal what it reports. "
-                        f"The copy you ran ({here}) can be deleted.")
+                        f"{DECISIONS_LOG} as a decision that supersedes the one for {old}, "
+                        f"then run check and reseal what it reports.{disposable}")
         elif old != __version__:
             done.append(f"note: {TOOL_COPY} is {old}, this is {__version__}; "
                         "rerun with --update-tool to replace it")
+
+    if "--fix-line-endings" in opts:
+        fixed = _crlf_files(root)
+        for path in fixed:
+            path.write_bytes(path.read_bytes().replace(b"\r\n", b"\n"))
+        if fixed:
+            done.append(f"converted {len(fixed)} text file(s) from CRLF to LF")
 
     if "--store" in opts:
         sp = Path(opts["--store"]).expanduser()
@@ -1806,6 +1842,12 @@ def doctor(root: Path) -> int:
 
     if _gitattributes_ok(root):
         ok(".gitattributes keeps text files in LF")
+        crlf = _crlf_files(root)
+        if crlf:
+            shown = ", ".join(p.relative_to(root).as_posix() for p in crlf[:3])
+            more = f" (+{len(crlf) - 3} more)" if len(crlf) > 3 else ""
+            fix(f"{len(crlf)} text file(s) still have CRLF line endings: {shown}{more}; "
+                "scripted edits may silently miss them", f"{cmd} init --fix-line-endings")
     else:
         fix(".gitattributes does not fix line endings; digests may differ between machines",
             f"{cmd} init")

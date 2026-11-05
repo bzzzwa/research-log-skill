@@ -207,14 +207,17 @@ Two files are committed on purpose:
 | `.gitattributes` | `* text=auto eol=lf` keeps text files identical on every machine. Digests of text files are also computed with line endings normalised, so a checkout with CRLF does not make records look stale |
 
 In a project created before `.gitattributes` was added, run `rlcheck init`, then
-`git add --renormalize .` and commit. Digests computed by rlcheck before
+`rlcheck init --fix-line-endings` to convert text files still checked out with
+CRLF (`doctor` lists them), and commit. Digests computed by rlcheck before
 version 2026.11.3 did not normalise line endings, so after updating the
 project's copy run `rlcheck stale` and reseal what it reports. From version
 2026.11.4 the decisions view also marks confirmed and provisional decisions, so
 run `rlcheck decisions` once after updating. From version 2026.11.5 a complete
 task record needs `performed-by:`, and `seal` will not change a finished
 record's digests without `--rerun` or `--accept` and a logged decision; add
-`performed-by:` to records closed before the update.
+`performed-by:` to records closed before the update, recording only what can be
+confirmed. When you update, the new decision about the version supersedes the
+one about the previous version.
 
 ## Pre-commit hook
 
