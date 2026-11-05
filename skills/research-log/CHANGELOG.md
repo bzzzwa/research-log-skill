@@ -12,6 +12,20 @@ lists under *In a project*, oldest first.
 
 ---
 
+## 2026.11.9
+
+**Changed**
+- README corrections: setting up by hand starts with `git init` and says which
+  copy of the script to use before and after `init`; `claude-settings` is marked
+  as Claude Code only, also for a second computer; `init --update-tool` must be
+  run from the newer copy; only project commands refuse to run outside a
+  project; `status` shows the handoff only of a task in progress; the plan and
+  README age checks are warnings and do not fail `check`.
+- No change to the checks or to `SKILL.md` beyond the version number.
+
+**In a project**
+- Nothing is required.
+
 ## 2026.11.8
 
 **Changed**
@@ -34,6 +48,10 @@ lists under *In a project*, oldest first.
   which `doctor` then reported.
 - A decision whose `**Decided by.**` says "proposed by Claude" without
   "confirmed" counts as provisional, like one that says "provisional".
+- This changelog is new. When a project's copy of the script is older than the
+  skill, `SKILL.md` tells Claude to read the changelog for every version in
+  between instead of comparing the scripts, and to do what each entry lists
+  under *In a project*.
 
 **In a project**
 - Run `rlcheck decisions`. Decisions proposed by Claude and never confirmed now

@@ -79,8 +79,8 @@ reading the whole history.
 `rlcheck check`, not when the work feels done. The check looks at substance as
 well as form: no empty sections or template text in a finished record, every
 output present, every cited decision, limitation and snapshot resolvable,
-derived files up to date, living documents not older than the work they
-describe.
+derived files up to date. It also warns when the plan or the README look older
+than the work they describe.
 
 **Auditable down to the tool.** Each finished task says who performed it — the
 researcher, or which model in which environment — and whether the researcher
@@ -119,16 +119,16 @@ Start Claude Code in the research project's folder. Claude runs the checks
 itself.
 
 **Claude.ai.** Download `research-log-<version>.zip` from the latest release, or
-zip the `research-log` folder yourself, and upload it under Settings → Skills.
-Give the Filesystem connector access to the project folder and the store, and to
-nothing else Claude does not need.
+zip the `research-log` folder yourself, and add it as a skill in Claude.ai's
+settings. Give the Filesystem connector access to the project folder and the
+store, and to nothing else Claude does not need.
 
 Claude.ai's code execution runs in a sandbox, not on your computer, so there
 Claude cannot run the checks on your project. It gives you the exact commands to
-run in PowerShell and asks you to paste the output, and it does not treat a step
-as done until it has seen that output. It also never retypes the script: it
-hands you `rlcheck.py` as a download with its SHA-256 and tells you how to
-install it into the project.
+run in PowerShell or your terminal and asks you to paste the output, and it does
+not treat a step as done until it has seen that output. It also never retypes
+the script: it hands you `rlcheck.py` as a download with its SHA-256 and tells
+you how to install it into the project.
 
 ## Set up a research project
 
@@ -140,18 +140,23 @@ runs `rlcheck doctor`, which lists every part of the setup as `OK`, `FIX` or
 into `store:sources/brief/`, and the first task records its transcription in
 `methodology/00-brief.md`.
 
-By hand, from the project folder, with the script from the skill:
+By hand, in the project folder:
 
 ```
-python <skill-dir>/scripts/rlcheck.py doctor
-python <skill-dir>/scripts/rlcheck.py init --id open-science-2026 --store "C:\Users\me\OneDrive - Org\Research\open-science-2026"
-python tools/rlcheck.py claude-settings
+git init
+python <rlcheck> doctor
+python <rlcheck> init --id open-science-2026 --store "C:\Users\me\OneDrive - Org\Research\open-science-2026"
+python tools/rlcheck.py claude-settings      # Claude Code only
 python tools/rlcheck.py doctor
 ```
 
-`<skill-dir>` is wherever `research-log/` is: `~/.claude/skills/research-log`,
-a project's `.claude/skills/research-log`, `skills/research-log` in a clone of
-this repository, or simply the downloaded `rlcheck.py`.
+`<rlcheck>` is the skill's script, used only until the project has its own
+copy: `<skill-dir>/scripts/rlcheck.py`, where `<skill-dir>` is
+`~/.claude/skills/research-log`, a project's `.claude/skills/research-log` or
+`skills/research-log` in a clone of this repository; or a downloaded
+`rlcheck.py`. From `init` on, every command runs the project's copy,
+`tools/rlcheck.py`. The last `doctor` keeps reporting `PROFILE.md` as missing
+until you have written it with Claude.
 
 `init` creates the methodology skeleton, `research-log.ini`, the `.gitignore`
 and `.gitattributes` entries, the project's copy of the script in
@@ -167,18 +172,22 @@ described below. Check it in the next Claude Code session with `/permissions`
 and `/hooks`. The rules guard against accidental edits but do not cover shell
 commands; the digests in the records are what detect a changed source.
 
-**On another computer**, clone the project and tell it where the store is:
+**On another computer**, clone the project, tell it where the store is, and
+check the setup:
 
 ```
 python tools/rlcheck.py init --store "D:\Sync\Research\open-science-2026"
+python tools/rlcheck.py claude-settings      # Claude Code only
+python tools/rlcheck.py doctor
 ```
 
 ## Working on a project
 
 **Starting a session.** Ask Claude to continue the project. It reads the
 project's documents in a fixed order and starts from `rlcheck status`, which
-lists open tasks with their last handoff, decisions awaiting your confirmation,
-and today's date. In Claude Code the session hook shows `status` automatically.
+lists open tasks with the handoff of any task in progress, decisions awaiting
+your confirmation, and today's date. In Claude Code the session hook shows
+`status` automatically.
 
 **Tasks.** Every unit of work is a task with its own record. Claude opens the
 record before the work and confirms the plan with you: screening criteria,
@@ -203,14 +212,15 @@ keeps the trace.
 ## Commands
 
 Throughout this README, `rlcheck <command>` means `python tools/rlcheck.py
-<command>`, run in the project folder. The script always works on the current
-folder and refuses to run outside a project.
+<command>`, run in the project folder. The script works on the current folder.
+`doctor`, `init` and `version` run anywhere; every other command refuses to run
+outside a project, so a run in the wrong place cannot report a clean result.
 
 | Command | What it does |
 |---|---|
 | `doctor` | checks the setup on this computer and says how to fix each gap |
 | `init [--id ID] [--store PATH] [--adopt]` | creates or completes the setup |
-| `init --update-tool` | replaces `tools/rlcheck.py` with the copy being run (see *Update*) |
+| `init --update-tool` | run from a newer copy (the skill's script or a download): replaces `tools/rlcheck.py` with that copy; see *Update* |
 | `init --fix-line-endings` | converts text files checked out with CRLF to LF |
 | `claude-settings` | Claude Code access to the store and the session hook |
 | `version` | the version of this copy |
@@ -225,7 +235,7 @@ folder and refuses to run outside a project.
 | `where store:<path>` | where a store file is on this computer |
 
 `doctor`, `validate`, `stale` and `check` exit non-zero when they find a
-problem.
+problem; warnings alone do not make them fail.
 
 ## What is in git
 
@@ -269,9 +279,9 @@ it loaded.
 **A project.** A newer skill does not change a project's `tools/rlcheck.py`.
 When you want the project on the new version, ask Claude. It reads
 `CHANGELOG.md` for every version in between, logs the update as a decision,
-replaces the copy with `init --update-tool`, runs the checks and does what the
-changelog lists for the project. In Claude.ai it gives you the new script as a
-download and the commands to run.
+runs `init --update-tool` from the newer copy of the script, runs the checks
+and does what the changelog lists for the project. In Claude.ai it gives you the
+new script as a download and the commands to run it from there.
 
 ## Pre-commit hook
 

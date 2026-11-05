@@ -5,7 +5,7 @@ description: Keep the methodology log and task records of a social-science desk-
 
 # Research Log
 
-**Version.** 2026.11.8 — the same number as `__version__` in
+**Version.** 2026.11.9 — the same number as `__version__` in
 `scripts/rlcheck.py`. If this skill is available to you more than once with
 different versions (for example in the project and in the user's account), tell
 the user which version you are following.
