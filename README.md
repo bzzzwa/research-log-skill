@@ -71,6 +71,16 @@ current machine and prints the command that fixes each gap. The skill tells the
 model to run it first and walk the user through it, so a new project, or an
 existing one on a new computer, is set up in the conversation.
 
+**Auditable down to the tool.** Each finished task says who performed it — the
+researcher, or which model in which environment — and the instructions a model
+followed and the scripts it ran are inputs like any source. A finished record
+cannot be quietly resealed against new inputs: every such change carries a
+decision and stays visible in the record.
+
+**Bookkeeping, not management.** The model records, checks and proposes; it
+does not schedule the work against deadlines, and its own ideas for new work
+wait in the plan until the researcher makes them a task.
+
 ## Install the skill
 
 **Claude Code (intended).** Copy `skills/research-log/` into `~/.claude/skills/`
@@ -171,6 +181,11 @@ repository.
 
 ## What is in git
 
+Research project repositories are private. Task records, the decision log and
+the extractions quote and summarise the sources, and record internal decisions
+about the client's assignment; none of that is meant to be public, even when
+the sources themselves are.
+
 In a research project, everything in the repository is committed except three
 machine-local files, which `init` adds to `.gitignore`:
 
@@ -196,7 +211,10 @@ In a project created before `.gitattributes` was added, run `rlcheck init`, then
 version 2026.11.3 did not normalise line endings, so after updating the
 project's copy run `rlcheck stale` and reseal what it reports. From version
 2026.11.4 the decisions view also marks confirmed and provisional decisions, so
-run `rlcheck decisions` once after updating.
+run `rlcheck decisions` once after updating. From version 2026.11.5 a complete
+task record needs `performed-by:`, and `seal` will not change a finished
+record's digests without `--rerun` or `--accept` and a logged decision; add
+`performed-by:` to records closed before the update.
 
 ## Pre-commit hook
 

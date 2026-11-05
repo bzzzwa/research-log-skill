@@ -24,7 +24,8 @@ Usage:
     python rlcheck.py validate             records, logs, snapshots, derived files
     python rlcheck.py stale                recompute input digests, report drift
     python rlcheck.py check                validate + stale, for pre-commit hooks
-    python rlcheck.py seal tasks/t0007-x   write current input digests into a record
+    python rlcheck.py seal tasks/t0007-x [--rerun D012 | --accept D012]
+                                           write current input digests into a record
     python rlcheck.py decisions            regenerate methodology/25-decisions-in-force.md
     python rlcheck.py retrieval <slug>     create a dated retrieval snapshot directory
 
@@ -44,7 +45,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-__version__ = "2026.11.4"
+__version__ = "2026.11.5"
 
 RECORD_NAME = "record.md"
 TASKS_DIR = "tasks"
@@ -61,7 +62,10 @@ CACHE_FILE = ".rlcheck-cache.json"
 CLAUDE_LOCAL_SETTINGS = ".claude/settings.local.json"
 STORE_PREFIX = "store:"
 STORE_MARKER = ".research-store"
-STORE_DIRS = ["inbox", "sources", "sources/brief", "exports"]
+STORE_DIRS = ["inbox", "sources", "sources/brief", "work", "exports"]
+STORE_OUTPUT_ROOTS = {"sources", "work", "exports"}
+PLAN = "methodology/10-plan.md"
+RESEAL_KINDS = {"rerun", "accepted"}
 STORE_INBOX = "inbox"
 GITIGNORE_LINES = [LOCAL_CONFIG, CACHE_FILE, CLAUDE_LOCAL_SETTINGS]
 GITATTRIBUTES_LINE = "* text=auto eol=lf"
@@ -70,6 +74,7 @@ CACHE_VERSION = 2
 PROJECT_ID = re.compile(r"^[a-z0-9][a-z0-9-]{1,62}$")
 
 REQUIRED_KEYS = ["id", "title", "status", "opened", "inputs", "outputs"]
+PERFORMED_BY = "performed-by"
 # Declarations that a complete record must make explicitly, even if empty ([]).
 DECLARATION_KEYS = ["decisions", "limitations", "retrievals"]
 ALLOWED_STATUS = {"planned", "in-progress", "complete", "superseded"}
@@ -294,6 +299,16 @@ def parse_time(value: str):
         except ValueError:
             continue
     return None
+
+
+def today() -> _dt.date:
+    """The date on this computer. Records take their dates from here."""
+    return _dt.date.today()
+
+
+def _date_of(value):
+    t = parse_time(value) if value else None
+    return t.date() if t else None
 
 
 def _short(items, n=3):
@@ -725,6 +740,11 @@ def check_decisions(root: Path, rep: Report):
             if old in seen and not seen[old]["provisional"]:
                 rep.warn(where, f"{e['id']} confirms {old}, which is not marked provisional")
 
+    for e in entries:
+        d = _date_of(e["date"])
+        if d and d > today() + _dt.timedelta(days=1):
+            rep.warn(where, f"{e['id']} is dated {e['date']}, after today ({today()})")
+
     nums = [int(rid[1:]) for rid in order]
     if nums != sorted(nums):
         rep.warn(where, "decision ids are not in ascending order")
@@ -935,6 +955,37 @@ def check_record(root: Path, path: Path, rep: Report, decision_ids, limitation_i
     complete = status == "complete"
     if complete and not meta.get("closed"):
         rep.fail(rel, "status is 'complete' but 'closed' date is missing")
+    if complete and not meta.get(PERFORMED_BY):
+        rep.fail(rel, f"complete record must say who performed the work ('{PERFORMED_BY}:', "
+                      "e.g. the researcher, or the model and environment)")
+
+    # --- dates come from the computer, and must make sense
+    dates = {}
+    for key in ("opened", "closed", "checkpoint"):
+        value = meta.get(key)
+        if value:
+            d = _date_of(value)
+            if d is None:
+                rep.fail(rel, f"'{key}' {value!r} is not an ISO date")
+            else:
+                dates[key] = d
+                if d > today() + _dt.timedelta(days=1):
+                    rep.warn(rel, f"'{key}' {value} is after today ({today()}); take dates from the computer")
+    if "opened" in dates and "closed" in dates and dates["closed"] < dates["opened"]:
+        rep.fail(rel, f"closed {meta['closed']} is before opened {meta['opened']}")
+
+    resealed = meta.get("resealed")
+    if resealed is not None:
+        if not isinstance(resealed, list):
+            rep.fail(rel, "'resealed' must be a list written by 'rlcheck seal'")
+        else:
+            for item in resealed:
+                if not isinstance(item, dict) or item.get("kind") not in RESEAL_KINDS:
+                    rep.fail(rel, f"malformed 'resealed' entry {item!r}")
+                    continue
+                did = item.get("decision", "")
+                if decision_ids is not None and did not in decision_ids:
+                    rep.fail(rel, f"'resealed' entry refers to {did!r}, which is not in {DECISIONS_LOG}")
 
     rid = meta.get("id")
     if rid:
@@ -985,6 +1036,11 @@ def check_record(root: Path, path: Path, rep: Report, decision_ids, limitation_i
 
     for out in meta.get("outputs") or []:
         out_path = out["path"] if isinstance(out, dict) else out
+        if is_store_path(out_path):
+            first = _norm(out_path[len(STORE_PREFIX):]).split("/", 1)[0]
+            if first not in STORE_OUTPUT_ROOTS:
+                rep.fail(rel, f"output {out_path}: outputs in the store belong in sources/ "
+                              "(catalogued sources), work/ (large intermediates) or exports/")
         check_path(root, out_path, rep, rel, "declared output", missing_is_fail=complete)
 
     # --- declarations: decisions, limitations, retrievals
@@ -1032,6 +1088,46 @@ def check_record(root: Path, path: Path, rep: Report, decision_ids, limitation_i
                 data = None
             if data and not covered_by(data, inputs):
                 rep.fail(rel, f"retrieval {snap_path} keeps its data in {data}, which is not among the inputs")
+    return meta
+
+
+def _doc_date(root: Path, rel: str, label: str):
+    path = root / rel
+    if not path.is_file():
+        return None, None
+    text = path.read_text(encoding="utf-8")
+    m = re.search(r"\*\*" + label + r"\.\*\*\s*(\d{4}-\d{2}-\d{2})", text)
+    return text, (_date_of(m.group(1)) if m else None)
+
+
+def check_currency(root: Path, rep: Report, metas, entries):
+    """Warn when living documents look older than the work they describe."""
+    activity = []
+    for m in metas:
+        if m.get("status") == "complete" and _date_of(m.get("closed")):
+            activity.append((_date_of(m.get("closed")), f"task {m.get('id')} closed"))
+    for e in entries or []:
+        if _date_of(e["date"]):
+            activity.append((_date_of(e["date"]), f"decision {e['id']}"))
+    latest = max(activity) if activity else None
+
+    plan_text, plan_date = _doc_date(root, PLAN, "Updated")
+    if plan_text is not None:
+        if plan_date is None and latest:
+            rep.warn(PLAN, "has no '**Updated.** YYYY-MM-DD' line; rewrite the plan and date it")
+        elif plan_date and latest and plan_date < latest[0]:
+            rep.warn(PLAN, f"last updated {plan_date}, but {latest[1]} on {latest[0]}; "
+                           "rewrite it to state what is true now")
+        done = {m.get("id") for m in metas if m.get("status") in ("complete", "superseded")}
+        nxt = sections(plan_text).get("## Next", "")
+        stale_refs = sorted(set(re.findall(r"\bt\d{4}\b", nxt)) & done)
+        if stale_refs:
+            rep.warn(PLAN, f"'## Next' names finished task(s) {', '.join(stale_refs)}")
+
+    readme_text, readme_date = _doc_date(root, "README.md", "Last updated")
+    if readme_text is not None and plan_date and (readme_date is None or readme_date < plan_date):
+        rep.warn("README.md", f"'Last updated' is {readme_date or 'missing'}, the plan is from "
+                              f"{plan_date}; check that its State section is current")
 
 
 def validate(root: Path) -> int:
@@ -1046,11 +1142,16 @@ def validate(root: Path) -> int:
 
     records = find_records(root)
     seen_ids = {}
+    metas = []
     for path in records:
-        check_record(root, path, rep, decision_ids, limitation_ids, seen_ids)
+        meta = check_record(root, path, rep, decision_ids, limitation_ids, seen_ids)
+        if meta:
+            metas.append(meta)
+    check_currency(root, rep, metas, load_decisions(root)[1])
 
     print(
-        f"\n{len(records)} record(s), {len(decision_ids or [])} decision(s), "
+        f"\ntoday: {today()} (the date on this computer; use it for anything you date)\n"
+        f"{len(records)} record(s), {len(decision_ids or [])} decision(s), "
         f"{len(snapshots)} snapshot(s) checked: {rep.fails} problem(s), {rep.warns} warning(s)."
     )
     unchecked = getattr(rep, "unchecked", 0)
@@ -1115,12 +1216,36 @@ def stale(root: Path) -> int:
     return 1 if drifted or unsealed or errors else 0
 
 
-def seal(root: Path, task_dir: str) -> int:
+def seal(root: Path, task_dir: str, args=()) -> int:
     """Write current digests for every input of one record.
 
-    Touches only the 'inputs' block of the front matter. An input item
-    without a digest line gets one.
+    Touches only the 'inputs' block of the front matter (and, for a finished
+    record, the 'resealed' trace). An input item without a digest line gets
+    one. In a complete or superseded record a digest may only change with
+    --rerun D012 (the work was redone) or --accept D012 (the old result was
+    accepted for the new input); either way the change is recorded under
+    'resealed', so the record never claims a result came from inputs it did
+    not see.
     """
+    try:
+        opts = _parse_opts(list(args), {"--rerun": True, "--accept": True})
+    except ValueError as exc:
+        print(f"seal: {exc}")
+        return 2
+    if len(opts) > 1:
+        print("seal: give either --rerun or --accept, not both")
+        return 2
+    kind, why = None, None
+    if "--rerun" in opts:
+        kind, why = "rerun", opts["--rerun"]
+    elif "--accept" in opts:
+        kind, why = "accepted", opts["--accept"]
+    if why is not None:
+        _, entries = load_decisions(root)
+        if not DECISION_ID.match(why) or not entries or why not in {e["id"] for e in entries}:
+            print(f"seal: {why} is not a decision in {DECISIONS_LOG}; log the decision first")
+            return 1
+
     path = (root / task_dir / RECORD_NAME) if (root / task_dir).is_dir() else (root / task_dir)
     if not path.is_file():
         print(f"no record found at {path}")
@@ -1128,11 +1253,13 @@ def seal(root: Path, task_dir: str) -> int:
 
     text = path.read_text(encoding="utf-8")
     try:
-        _, end = parse_front_matter(text)
+        meta, end = parse_front_matter(text)
     except ValueError as exc:
         print(f"FAIL {path}: {exc}")
         return 1
+    finished = meta.get("status") in ("complete", "superseded")
     lines = text.splitlines()
+    changes = []  # (input path, old digest, new digest)
 
     out = []
     updated = 0
@@ -1149,6 +1276,8 @@ def seal(root: Path, task_dir: str) -> int:
             skipped.append((rel, new))
             print(f"  {rel} -> NOT SEALED ({new})")
             return old
+        if old and old != new:
+            changes.append((rel, old, new))
         print(f"  {rel} -> {new}")
         updated += 1
         return new
@@ -1194,6 +1323,42 @@ def seal(root: Path, task_dir: str) -> int:
             continue
 
         out.append(line)
+
+    if finished and changes and kind is None:
+        print(f"\nNOT WRITTEN: {path} is {meta.get('status')}, and these inputs changed since it was sealed:")
+        for rel, old, new in changes:
+            print(f"  {rel}")
+        print("A finished record must not silently claim it was made from the new inputs.")
+        print("Decide with the user, log the decision, then run one of:")
+        print(f"  seal {task_dir} --rerun D0NN    the work was redone with the new inputs")
+        print(f"  seal {task_dir} --accept D0NN   the old result stands for the new inputs")
+        return 1
+
+    if finished and changes:
+        trace = []
+        for rel, old, new in changes:
+            trace += [
+                f"  - path: {rel}",
+                f"    kind: {kind}",
+                f"    decision: {why}",
+                f"    date: {today()}",
+                f"    was: {old}",
+                f"    now: {new}",
+            ]
+        fence = next(i for i in range(1, len(out)) if out[i].strip() == "---")
+        at = None
+        for i in range(1, fence):
+            if out[i].split(":", 1)[0].strip() == "resealed" and not out[i].startswith(" "):
+                out[i] = "resealed:"
+                at = i + 1
+                while at < fence and (not out[at].strip() or out[at].startswith(" ")):
+                    at += 1
+                break
+        if at is None:
+            out[fence:fence] = ["resealed:"] + trace
+        else:
+            out[at:at] = trace
+        print(f"recorded {len(changes)} change(s) under 'resealed' ({kind}, {why})")
 
     path.write_text("\n".join(out) + "\n", encoding="utf-8")
     print(f"sealed {updated} input digest(s) in {path}")
@@ -1244,6 +1409,7 @@ def status(root: Path) -> int:
         print("the state of the work.")
         print()
 
+    print(f"today: {today()} (the date on this computer; use it for anything you date)")
     print(f"project: {root}")
     print(f"records: {len(records)}")
     for key in sorted(counts):
@@ -1291,7 +1457,8 @@ SKELETON = {
         "**In scope.**\n**Out of scope.**\n**Deliverable.**\n\n## Amendments\n"
     ),
     "methodology/10-plan.md": (
-        "# Plan\n\n**Updated.** YYYY-MM-DD\n\n## Phases\n\n## Now\n\n## Next\n\n## Deferred\n"
+        "# Plan\n\n**Updated.** YYYY-MM-DD\n\n## Phases\n\n## Now\n\n## Next\n\n## Deferred\n\n"
+        "## Proposed\n"
     ),
     "methodology/20-decisions.md": "# Decisions\n",
     "methodology/30-limitations.md": (
@@ -1598,7 +1765,8 @@ def doctor(root: Path) -> int:
             print(f"      -> {how}")
 
     print(f"project: {root}")
-    print(f"rlcheck: {__version__} ({Path(__file__).resolve()})\n")
+    print(f"rlcheck: {__version__} ({Path(__file__).resolve()})")
+    print(f"today:   {today()}\n")
     if not is_project_root(root):
         note("this folder is not a research-log project yet",
              "if it should be, set it up with init; otherwise run doctor from the project root")
@@ -1837,9 +2005,9 @@ def _dispatch(command, root, argv):
         return decisions(root)
     if command == "seal":
         if len(argv) < 3:
-            print("usage: rlcheck.py seal <task-dir>")
+            print("usage: rlcheck.py seal <task-dir> [--rerun D012 | --accept D012]")
             return 2
-        return seal(root, argv[2])
+        return seal(root, argv[2], argv[3:])
     if command == "retrieval":
         if len(argv) < 3:
             print("usage: rlcheck.py retrieval <slug>")

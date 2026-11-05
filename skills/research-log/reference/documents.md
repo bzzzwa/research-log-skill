@@ -12,7 +12,8 @@ Split by **class** first, by topic second.
 ## README.md — living
 
 The router. Someone who has never seen the project reads this and knows where to
-go. Rewritten whenever the structure or the phase changes.
+go. Rewritten whenever the structure or the phase changes; `validate` warns when
+its `**Last updated.**` is older than the plan's `**Updated.**`.
 
 ```markdown
 # <Project title>
@@ -27,7 +28,9 @@ go. Rewritten whenever the structure or the phase changes.
 - `tasks/` — one directory per completed unit of work
 - `sources/retrieved/` — dated snapshots of search and tool results
 - the store (`store:`, located per machine in `research-log.local.ini`) —
-  inbox, catalogued sources and final exports; see PROFILE.md for what is where
+  inbox, catalogued sources, large intermediates and final exports; see
+  PROFILE.md for what is where
+- `tools/` — the project's copy of rlcheck and the scripts the analysis uses
 - `PROFILE.md` — source types and conventions specific to this project
 
 ## State
@@ -80,7 +83,12 @@ only what the user or the client has stated; leave it empty until they have.
 
 What the work is and what comes next. Rewritten in place at the end of every
 task. It states intent, never history — history lives in `20-decisions.md` and
-in the task records.
+in the task records. `**Updated.**` carries the date of the last rewrite, taken
+from `rlcheck`; `validate` warns when it is older than the last closed task or
+decision, or when *Next* still names a finished task.
+
+It is not a schedule. Deadlines from the brief may be noted as context, but the
+plan does not count down to them or pace the work, unless the researcher asks.
 
 ```markdown
 # Plan
@@ -99,6 +107,10 @@ in the task records.
 
 ## Deferred
 <things consciously postponed, and until when>
+
+## Proposed
+<ideas for new work proposed by Claude or anyone else, one line each with why;
+nothing here is worked on until the researcher makes it a task>
 ```
 
 ---

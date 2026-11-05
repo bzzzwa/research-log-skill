@@ -17,6 +17,7 @@ status: planned
 opened: 2026-08-20
 checkpoint:
 closed:
+performed-by:
 inputs:
   - path: store:sources/policy/eu
     digest:
@@ -69,12 +70,14 @@ strings with `<` or `>` in them belong in code.
 | `status` | `planned`, `in-progress`, `complete`, `superseded` |
 | `opened` / `closed` | ISO dates; `closed` required when `complete` |
 | `checkpoint` | ISO date-time when `## Method as executed` and `## Handoff` were last brought up to date; required when `in-progress` |
+| `performed-by` | who did the work: the researcher, or the model (name and version) and environment, and whether the researcher reviewed it; required when `complete` |
 | `inputs` | every file or directory the result depends on, each with a `path` and a `digest` |
 | `decisions` | ids from `methodology/20-decisions.md` made during this task, e.g. `[D012, D013]` |
 | `limitations` | ids from `methodology/30-limitations.md` raised during this task, e.g. `[L004]` |
 | `retrievals` | snapshot directories under `sources/retrieved/` this task's result depends on |
 | `outputs` | every file this task produced |
 | `supersedes` | id of the record this one replaces, or empty |
+| `resealed` | written by `rlcheck seal --rerun/--accept`, never by hand: each change of an input digest after the task was finished, with the decision behind it |
 
 The front-matter parser deliberately supports only this shape: scalars, short
 inline lists like `[D012, D013]`, and block lists of scalars or of `path:`
@@ -135,12 +138,30 @@ it is wrong on every other computer.
   `store:inbox/`. A file in the inbox enters the record when a cataloguing task
   moves it to `store:sources/` and lists it among its outputs.
 - Outputs are text in the task directory. The only outputs in the store are
-  catalogued sources (`store:sources/`) and final binary exports
-  (`store:exports/`).
+  catalogued sources (`store:sources/`), large intermediates
+  (`store:work/<task id>/`) and final binary exports (`store:exports/`).
+- Instructions a model followed for an analytic step (a prompt, a coding frame,
+  an extraction template) and scripts the task ran are inputs too.
 
 On a machine where the store is not available, `seal` cannot read store inputs.
 It keeps their previous digest, says so and exits non-zero. Seal on a machine
 that has the store before closing the task.
+
+Once a record is `complete` or `superseded`, `seal` will not change a digest on
+its own. When an input changed after the task was finished, decide with the
+user, log the decision, and run `seal` with `--rerun D0NN` (the work was redone)
+or `--accept D0NN` (the old result stands). The change is then recorded under
+`resealed:` in the front matter:
+
+```yaml
+resealed:
+  - path: store:sources/policy/eu
+    kind: accepted
+    decision: D014
+    date: 2026-11-20
+    was: tree:3f2a…
+    now: tree:91c0…
+```
 
 ## Method as executed, not as planned
 
@@ -169,10 +190,10 @@ A handoff that is out of date is worse than none, because it is believed.
 
 | Status | Checked |
 |---|---|
-| any | front matter parses; required keys present; id unique; inputs exist and none is in the inbox; all six sections present; `## Question` filled with no placeholder |
+| any | front matter parses; required keys present; id unique; dates are ISO dates, not after today, and a task is not closed before it opened; inputs exist and none is in the inbox; store outputs are in `sources/`, `work/` or `exports/`; all six sections present; `## Question` filled with no placeholder |
 | `planned`, `in-progress` | missing outputs are warnings |
 | `in-progress` | `## Handoff` filled with no placeholder; `checkpoint` set to an ISO date or date-time |
-| `complete` | `closed` set; no section empty; no placeholder anywhere; every output exists; `decisions`, `limitations`, `retrievals` declared and resolvable |
+| `complete` | `closed` and `performed-by` set; no section empty; no placeholder anywhere; every output exists; `decisions`, `limitations`, `retrievals` declared and resolvable; every `resealed` entry names a decision in the log |
 
 `superseded` records are checked only for structure.
 

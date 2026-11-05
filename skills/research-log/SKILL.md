@@ -5,7 +5,7 @@ description: Keep the methodology log and task records of a social-science desk-
 
 # Research Log
 
-**Version.** 2026.11.4 — the same number as `__version__` in
+**Version.** 2026.11.5 — the same number as `__version__` in
 `scripts/rlcheck.py`. If this skill is available to you more than once with
 different versions (for example in the project and in the user's account), tell
 the user which version you are following.
@@ -18,6 +18,11 @@ and a fresh session costs nothing.
 
 That is the whole purpose of this skill. It does not do research. It makes the
 project resumable.
+
+It is not project management either. Dates and deadlines in the brief or the
+plan are context. Do not count the days to a deadline, schedule or pace the
+work around one, or advise the researcher to speed up or slow down, unless the
+researcher asks for it or `PROFILE.md` says so.
 
 ## Two layers
 
@@ -152,6 +157,31 @@ Claude.ai, handed over for download as described above), then run
 | `rlcheck decisions` | regenerate `methodology/25-decisions-in-force.md` |
 | `rlcheck retrieval <slug>` | create a dated snapshot directory for tool results |
 
+## When to run what
+
+| When | Run |
+|---|---|
+| a session starts or resumes, or the context was compacted | `status` (on a machine new to the project: `doctor`) |
+| setting up a project, or an existing one on another machine | `doctor`, then what it says: `init`, `claude-settings` |
+| a task's inputs are listed, or change while it is open | `seal tasks/tNNNN-<slug>` |
+| a tool returns results the work will use | `retrieval <slug>`, then save the results into it |
+| an entry was added to `20-decisions.md` | `decisions` |
+| before saying a task is closed | `check` |
+| before a commit, before a delivery | `check` |
+| a source, a snapshot or the brief changed | `stale`; then, per record, after a logged decision: `seal ... --rerun D0NN` or `seal ... --accept D0NN` |
+| you need the location of a store file | `where store:<path>` |
+| you are about to write a date and have not seen today's in this session | `status` |
+
+In Claude.ai, give the user the commands of one step together, so that a single
+run and paste covers them.
+
+**Dates.** Every date you write — `opened`, `closed`, `checkpoint`, decision
+headers, `**Updated.**` — is taken from the `today:` line of the latest
+`rlcheck` output, never from earlier in the conversation. A conversation can
+run past midnight or be continued days later; the date you remember is then
+wrong. `validate` warns about dates after today and fails on a task closed
+before it was opened.
+
 ## Setting up a project
 
 When this skill is loaded in a directory that is meant to be a research project,
@@ -218,6 +248,7 @@ cannot run it, read the path from `research-log.local.ini`.
   inbox/                 new documents, not yet catalogued
   sources/               catalogued sources, frozen
     brief/               the client's original assignment and its revisions
+  work/                  large intermediates of tasks, one folder per task
   retrieved/             retrieval results too large for the repository (optional)
   exports/               final binary exports of the deliverable
 ```
@@ -230,6 +261,13 @@ is. A file enters the record when a task catalogues it: the task moves it to
 **Store sources are frozen.** Git cannot protect them; the digests in task
 records can. If a store source has to change, treat it like any frozen file:
 log the change and run `rlcheck stale`.
+
+**Large intermediates go to `store:work/<task id>/`.** Text extracted from long
+PDFs, documents split into parts for repeated reading, converted formats: when
+an analysis step produces something too large for git, it goes there, declared
+as an output of the task that made it and as an input of the tasks that use it.
+Everything a task produces that is small enough stays as text in the task's
+directory. Only final binary exports go to `store:exports/`.
 
 **On a machine without the store**, store paths cannot be read. `validate` and
 `stale` report them as not checked rather than failing, and `seal` keeps the
@@ -265,6 +303,7 @@ research-log.local.ini                  this machine's store and tool paths; not
 .gitattributes                          keeps text files in LF on every machine
 tools/
   rlcheck.py                            the project's copy of the checks, versioned with it
+  <other scripts>                       scripts the analysis uses (extraction, conversion, coding)
 methodology/
   00-brief.md                 frozen    the assignment, verbatim, plus agreed scope
   10-plan.md                  living    current plan and what comes next
@@ -341,6 +380,40 @@ into *Agreed scope* anything the user or the client has not stated. Content that
 comes from your own background knowledge, such as a definition of a term or an
 assumed list of languages, is marked as such where it is written, or left out.
 
+## What the work was done with
+
+An audit of AI-assisted research has to be able to say not only what was done
+but by what, and following which instructions.
+
+- Every complete record says who performed the work in `performed-by:`: the
+  researcher, or the model with its name and version as you know them and the
+  environment (Claude Code, Claude.ai), and whether the researcher reviewed the
+  result. `validate` fails on a complete record without it.
+- When a model performs an analytic step from written instructions — a prompt,
+  a coding frame, an extraction template, a list of questions for each document
+  — those instructions are a file in the task directory or in `tools/`, and an
+  input of the task. If the instructions change, `stale` then shows which
+  results were produced with the old ones.
+- Scripts the analysis uses live in `tools/` and are inputs of the tasks that
+  run them, for the same reason.
+
+## Proposals and the edges of a task
+
+Your own ideas for new outputs, comparisons or angles are welcome and often
+useful. They are written down, not acted on:
+
+- A proposal for new work goes into the *Proposed* section of `10-plan.md`,
+  with one line on why. Nothing in *Proposed* is worked on until the researcher
+  turns it into a task.
+- An observation about the subject goes into `40-insights.md` as before.
+
+A task works only with its declared inputs. Work done elsewhere — by a
+colleague, in another project, in an earlier version of a shared document —
+enters the project only as a new frozen input with a date. When two inputs use
+different category systems, or come from different stages of someone else's
+work, do not harmonise them silently or code them together. Name the mismatch
+as a limitation, and ask the researcher how to treat it.
+
 ## Opening a task
 
 1. Read `PROFILE.md`, then `methodology/10-plan.md`.
@@ -401,7 +474,8 @@ complete. Before saying a task is done, all of these must be true:
 
 - `record.md` has every required section filled. A section with nothing to
   report says `None.` and why; it is never empty and never left with template text.
-- `status: complete` and a `closed:` date are set.
+- `status: complete` and a `closed:` date are set, and `performed-by:` says who
+  did the work.
 - Every declared output exists at the declared path.
 - Every methodological decision made during the task has an entry in
   `methodology/20-decisions.md`, and its id is listed under `decisions:` in the
@@ -411,7 +485,10 @@ complete. Before saying a task is done, all of these must be true:
 - Every retrieval the result depends on is a snapshot under `sources/retrieved/`,
   listed under both `inputs:` and `retrievals:`, and the record has been resealed.
 - `rlcheck decisions` has been run if the decision log changed.
-- `methodology/10-plan.md` has been rewritten to reflect the new state.
+- `methodology/10-plan.md` has been rewritten to reflect the new state, with
+  today's date in `**Updated.**`, and the *State* in `README.md` is still true.
+  `validate` warns when the plan is older than the last closed task or decision,
+  when *Next* names a finished task, or when the README is older than the plan.
 - `rlcheck check` exits clean.
 
 `decisions:`, `limitations:` and `retrievals:` must be present in a complete
@@ -458,9 +535,22 @@ guessing. Run `rlcheck stale`.
 
 It compares recorded input digests against current ones and names the affected
 records: `STALE` when an input changed, `MISSING` when it is gone. Then, for each
-one: decide with the user whether to rerun it or accept
-it, log that decision in `20-decisions.md`, and either rerun and reseal, or set
-`status: superseded` and open a replacement task.
+one, decide with the user, log the decision in `20-decisions.md`, and do one of:
+
+- **Rerun** the task with the new inputs, update its record, and run
+  `rlcheck seal tasks/tNNNN-<slug> --rerun D0NN`.
+- **Accept** the old result for the new inputs (the added source changes
+  nothing, the correction is immaterial) and run
+  `rlcheck seal tasks/tNNNN-<slug> --accept D0NN`.
+- **Supersede** it: set `status: superseded` and open a replacement task.
+- **Extend** it: when sources were only added, open a new task that does the
+  same work for the new sources alone, with the earlier task's outputs among its
+  inputs, and accept the earlier task for the extended set.
+
+For a finished record, `seal` refuses to change a digest without `--rerun` or
+`--accept`, and records every such change under `resealed:` in the record:
+which input, old and new digest, the decision and the date. The record thus
+never claims that a result was made from inputs it did not see.
 
 A retrieval is never refreshed in place. Rerunning a search creates a new
 snapshot with a new date; the old one stays, because tasks that used it still
@@ -484,5 +574,8 @@ point at it.
   skill's directory, and never reuse values from another project.
 - Never present your own proposal or background knowledge as something the user
   or the client decided.
+- Never start work on your own proposal before the researcher has made it a
+  task, and never merge inputs that use different categories without asking.
+- Never take a date from memory; take it from the latest `rlcheck` output.
 - Never assess staleness, completeness or coverage by reading files when the
   script can answer it, and never report a check you have not seen run.
