@@ -83,11 +83,32 @@ connector access to the project folder and to the store, and nothing else the
 model does not need: the skill tells it to stay within the project, the store
 and the skill. Claude.ai's code execution runs in a sandbox, not on your
 computer, so the model cannot run `rlcheck` against the project; it gives you
-the exact command instead and asks you to paste the output. On first setup it
-writes the script into the project's `tools/`; after that it takes the paths
+the exact command instead and asks you to paste the output. On first setup, and
+when the project's copy is updated, it hands you `rlcheck.py` as a download with
+its SHA-256. Leave the file where the browser saved it, check the hash, and run
+`init` from it with the project root as the working directory; `init` copies the
+script into the project's `tools/` itself. After that the model takes the paths
 from `research-log.local.ini`, where `init` records them. `rlcheck` refuses to
 run outside a project folder, so a stray run in the sandbox cannot report a
 false clean result.
+
+## Update the skill
+
+The skill (instructions) and the project's copy of the script (checks) are
+updated separately, on purpose.
+
+**The skill.** Replace the whole `research-log` folder rather than copying files
+over it, so that nothing renamed or removed survives. If the skill is installed
+in more than one place — in a project's `.claude/skills/`, in
+`~/.claude/skills/`, in your Claude.ai account — update all of them, or the
+model may follow different instructions in different places. `SKILL.md` states
+its version at the top, so you can check which one a session loaded. Start a new
+conversation afterwards: a running session keeps the version it loaded.
+
+**A project's copy of the script.** Each project keeps the version of
+`tools/rlcheck.py` its records were checked with. A newer skill does not change
+it. When you want the project on the new version, ask the model: it logs the
+decision, has `init --update-tool` replace the copy, and runs the checks.
 
 ## Set up a research project
 
@@ -173,7 +194,9 @@ Two files are committed on purpose:
 In a project created before `.gitattributes` was added, run `rlcheck init`, then
 `git add --renormalize .` and commit. Digests computed by rlcheck before
 version 2026.11.3 did not normalise line endings, so after updating the
-project's copy run `rlcheck stale` and reseal what it reports.
+project's copy run `rlcheck stale` and reseal what it reports. From version
+2026.11.4 the decisions view also marks confirmed and provisional decisions, so
+run `rlcheck decisions` once after updating.
 
 ## Pre-commit hook
 

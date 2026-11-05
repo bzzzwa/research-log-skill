@@ -40,15 +40,17 @@ import hashlib
 import json
 import re
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
-__version__ = "2026.11.3"
+__version__ = "2026.11.4"
 
 RECORD_NAME = "record.md"
 TASKS_DIR = "tasks"
 DECISIONS_LOG = "methodology/20-decisions.md"
 DECISIONS_IN_FORCE = "methodology/25-decisions-in-force.md"
+APPEND_ONLY = ["methodology/20-decisions.md", "methodology/40-insights.md"]
 LIMITATIONS = "methodology/30-limitations.md"
 RETRIEVED_DIR = "sources/retrieved"
 MANIFEST_NAME = "retrieval.md"
@@ -593,7 +595,27 @@ def parse_decisions(text: str):
     for e in entries:
         e["fields"] = {k: v.strip() for k, v in e["fields"].items()}
         e["supersedes"] = re.findall(r"D\d{3,}", e["fields"].get("supersedes", ""))
+        e["confirms"] = re.findall(r"D\d{3,}", e["fields"].get("confirms", ""))
+        e["provisional"] = "provisional" in e["fields"].get("decided by", "").lower()
     return entries
+
+
+def decision_links(entries):
+    """Return (superseded_by, confirmed_by) maps: id -> list of later ids."""
+    superseded_by, confirmed_by = {}, {}
+    for e in entries:
+        for old in e["supersedes"]:
+            superseded_by.setdefault(old, []).append(e["id"])
+        for old in e["confirms"]:
+            confirmed_by.setdefault(old, []).append(e["id"])
+    return superseded_by, confirmed_by
+
+
+def awaiting_confirmation(entries):
+    """Ids of provisional decisions in force that no later entry confirms."""
+    superseded_by, confirmed_by = decision_links(entries)
+    return [e["id"] for e in entries
+            if e["provisional"] and e["id"] not in superseded_by and e["id"] not in confirmed_by]
 
 
 def malformed_decision_headers(text: str):
@@ -609,10 +631,7 @@ def parse_limitation_ids(text: str):
 
 
 def render_in_force(entries, source_digest: str) -> str:
-    superseded_by = {}
-    for e in entries:
-        for old in e["supersedes"]:
-            superseded_by.setdefault(old, []).append(e["id"])
+    superseded_by, confirmed_by = decision_links(entries)
     in_force = [e for e in entries if e["id"] not in superseded_by]
     out_of_force = [e for e in entries if e["id"] in superseded_by]
 
@@ -636,6 +655,12 @@ def render_in_force(entries, source_digest: str) -> str:
         meta = []
         if f.get("decided by"):
             meta.append(f"*Decided by:* {f['decided by']}")
+        if e["id"] in confirmed_by:
+            meta.append(f"*Confirmed by:* {', '.join(confirmed_by[e['id']])}")
+        elif e["provisional"]:
+            meta.append("**Provisional, awaiting confirmation.**")
+        if e["confirms"]:
+            meta.append(f"*Confirms:* {', '.join(e['confirms'])}")
         if e["supersedes"]:
             meta.append(f"*Supersedes:* {', '.join(e['supersedes'])}")
         if meta:
@@ -688,13 +713,17 @@ def check_decisions(root: Path, rep: Report):
 
     position = {rid: i for i, rid in enumerate(order)}
     for e in entries:
-        for old in e["supersedes"]:
-            if old == e["id"]:
-                rep.fail(where, f"{e['id']} supersedes itself")
-            elif old not in seen:
-                rep.fail(where, f"{e['id']} supersedes {old}, which does not exist")
-            elif position[old] > position[e["id"]]:
-                rep.fail(where, f"{e['id']} supersedes {old}, which comes after it")
+        for verb, targets in (("supersedes", e["supersedes"]), ("confirms", e["confirms"])):
+            for old in targets:
+                if old == e["id"]:
+                    rep.fail(where, f"{e['id']} {verb} itself")
+                elif old not in seen:
+                    rep.fail(where, f"{e['id']} {verb} {old}, which does not exist")
+                elif position[old] > position[e["id"]]:
+                    rep.fail(where, f"{e['id']} {verb} {old}, which comes after it")
+        for old in e["confirms"]:
+            if old in seen and not seen[old]["provisional"]:
+                rep.warn(where, f"{e['id']} confirms {old}, which is not marked provisional")
 
     nums = [int(rid[1:]) for rid in order]
     if nums != sorted(nums):
@@ -709,6 +738,36 @@ def check_decisions(root: Path, rep: Report):
         elif derived.read_text(encoding="utf-8") != expected:
             rep.fail(DECISIONS_IN_FORCE, "out of date or hand-edited; run 'rlcheck.py decisions'")
     return set(seen)
+
+
+def _git_head_text(root: Path, rel: str):
+    """Text of rel at HEAD, or None if there is no git, no commit or no such file."""
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(root), "show", f"HEAD:./{rel}"],
+            capture_output=True, timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if out.returncode != 0:
+        return None
+    return out.stdout.decode("utf-8", errors="replace")
+
+
+def check_append_only(root: Path, rep: Report):
+    """Committed entries of append-only files must not change; new ones may follow."""
+    for rel in APPEND_ONLY:
+        path = root / rel
+        if not path.is_file():
+            continue
+        head = _git_head_text(root, rel)
+        if head is None:
+            continue
+        committed = head.replace("\r\n", "\n").rstrip()
+        current = path.read_text(encoding="utf-8").replace("\r\n", "\n")
+        if not current.startswith(committed):
+            rep.fail(rel, "an entry that is already committed was changed or removed; restore it "
+                          f"(git diff HEAD -- {rel}) and add a new entry that corrects it")
 
 
 def check_limitations(root: Path, rep: Report):
@@ -979,6 +1038,7 @@ def validate(root: Path) -> int:
     rep = Report()
     decision_ids = check_decisions(root, rep)
     limitation_ids = check_limitations(root, rep)
+    check_append_only(root, rep)
 
     snapshots = find_snapshots(root)
     for snap in snapshots:
@@ -1205,6 +1265,9 @@ def status(root: Path) -> int:
         ids = {e["id"] for e in entries}
         superseded = {old for e in entries for old in e["supersedes"]} & ids
         print(f"decisions: {len(ids) - len(superseded)} in force, {len(superseded)} superseded")
+        waiting = awaiting_confirmation(entries)
+        if waiting:
+            print(f"  provisional, awaiting confirmation: {', '.join(waiting)}")
         derived = root / DECISIONS_IN_FORCE
         expected = render_in_force(entries, digest(root, DECISIONS_LOG))
         if not derived.is_file() or derived.read_text(encoding="utf-8") != expected:
@@ -1435,13 +1498,15 @@ def init(root: Path, args) -> int:
     if not copy.exists():
         copy.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(here, copy)
-        done.append(f"copied rlcheck {__version__} to {TOOL_COPY} (versioned with the project)")
+        done.append(f"copied rlcheck {__version__} to {TOOL_COPY} (versioned with the project); "
+                    f"from now on run it from there. The copy you ran ({here}) can be deleted.")
     elif copy.resolve() != here:
         old = _version_of(copy)
         if "--update-tool" in opts:
             shutil.copy2(here, copy)
             done.append(f"updated {TOOL_COPY} from {old} to {__version__}; log this in "
-                        f"{DECISIONS_LOG}, then run check and reseal what it reports")
+                        f"{DECISIONS_LOG}, then run check and reseal what it reports. "
+                        f"The copy you ran ({here}) can be deleted.")
         elif old != __version__:
             done.append(f"note: {TOOL_COPY} is {old}, this is {__version__}; "
                         "rerun with --update-tool to replace it")

@@ -128,10 +128,18 @@ searching (saturation), or accept a known weakness rather than fix it.
 **Supersedes.** <D003, or — if it replaces nothing>
 ```
 
+`**Confirms.** D003` is an optional field for an entry whose purpose is to
+confirm an earlier provisional decision. The confirmed decision stays in force
+and the in-force view marks it as confirmed; nothing has to be restated. Use
+`**Supersedes.**` only when the decision itself changes. A decision is
+provisional when its `**Decided by.**` contains the word "provisional";
+`rlcheck status` lists those not yet confirmed.
+
 The header must keep the form `## D012 — YYYY-MM-DD — title`, and each field
 starts its own line with the bold label ending in a full stop; `validate`
 parses both. `**Decision.**` must not be empty. Ids are never reused, and a
-decision can only supersede one that comes before it.
+decision can only supersede or confirm one that comes before it. Once an entry
+is committed, `validate` fails if it is changed: correct it with a new entry.
 
 After adding entries, run `rlcheck decisions` to regenerate
 `25-decisions-in-force.md`.

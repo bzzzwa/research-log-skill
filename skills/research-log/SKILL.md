@@ -5,6 +5,11 @@ description: Keep the methodology log and task records of a social-science desk-
 
 # Research Log
 
+**Version.** 2026.11.4 — the same number as `__version__` in
+`scripts/rlcheck.py`. If this skill is available to you more than once with
+different versions (for example in the project and in the user's account), tell
+the user which version you are following.
+
 Desk research in the social sciences cannot be handed to an agent end to end. The
 searching is theory-laden, inclusion is a judgement call, and synthesis is the
 researcher's work. What *can* be systematised is the bookkeeping: if every phase
@@ -90,12 +95,35 @@ says otherwise.
 
 If there is no `research-log.local.ini`, or it has no `[tools]` section, this
 machine has not been set up yet. Do not search the disk for Python or for
-another copy of the script. If the project has no `tools/rlcheck.py`, write a
-copy of this skill's `scripts/rlcheck.py` there through the connector: it
-belongs to the project and is versioned with it. Ask the user which Python to
-use, or give the command with `python` and say to replace it with the full path
-to `python.exe` if it is not found. The first command is `rlcheck init`, which
-records both locations in `[tools]` for every later command.
+another copy of the script. Ask the user which Python to use, or give the
+command with `python` and say to replace it with the full path to `python.exe`
+if it is not found.
+
+**Getting the script onto the user's computer.** The project needs its own
+copy in `tools/rlcheck.py`. In Claude.ai, never retype the script through the
+connector: it is long, and one wrong character would surface only later, as a
+wrong check. Hand it over as a file:
+
+1. Present this skill's `scripts/rlcheck.py` to the user for download, and
+   compute its SHA-256 in your sandbox.
+2. Tell the user to leave the downloaded file where the browser put it
+   (usually Downloads): not in the project root, not in `tools/`.
+3. Give the commands, with the project root as the working directory:
+
+   ```
+   Set-Location "<project root>"
+   Get-FileHash "$HOME\Downloads\rlcheck.py"     # must be <SHA-256>; if not, stop
+   & "<python>" "$HOME\Downloads\rlcheck.py" init <options>
+   ```
+
+   For a first setup the options are `--id <id> --store "<path>"` (on a second
+   machine only `--store "<path>"`); to update the project's copy, `--update-tool`.
+   If the browser renamed the file (`rlcheck (1).py`), use that name.
+
+`init` copies the script it was run from into `tools/rlcheck.py` and records
+its location; from then on every command uses `tools/rlcheck.py`, and the
+downloaded file can be deleted. In Claude Code, run `init` from this skill's
+`scripts/rlcheck.py` directly.
 
 Never say a check passed unless you have seen its output in this session.
 
@@ -105,9 +133,9 @@ print it. Compare it with `__version__` in this skill's `scripts/rlcheck.py`.
 If the skill's is newer, tell the user and offer the update, but do not make
 it unasked: a new version can change what the project is held to and how
 digests are computed. Updating is a decision. Log it in `20-decisions.md`,
-replace the file (`rlcheck init --update-tool` run with the newer copy, or
-write the newer file through the connector), then run `rlcheck check` and
-reseal what `stale` reports.
+replace the file with `rlcheck init --update-tool` run from the newer copy (in
+Claude.ai, handed over for download as described above), then run
+`rlcheck check` and reseal what `stale` reports.
 
 | Command | What it answers |
 |---|---|
@@ -290,8 +318,18 @@ reasons survive: git keeps what changed, not why.
 - The choices made during setup — task types, conventions, what is in scope —
   are logged as they are confirmed, not after setup is finished.
 - `**Decided by.**` says who decided: the researcher, the client, or "proposed
-  by Claude, confirmed by the researcher". A choice you made alone is marked
-  provisional.
+  by Claude, confirmed by the researcher". A choice you made alone, or one the
+  user has not yet confirmed, contains the word "provisional".
+- When the user confirms a provisional decision, add a new entry with
+  `**Confirms.** D00N`. Do not edit the old entry and do not supersede it: the
+  decision has not changed, it has been confirmed, and the in-force view marks
+  it so. Supersede only when the decision itself changes. `rlcheck status`
+  lists provisional decisions still awaiting confirmation; raise them with the
+  user when you resume.
+- An entry is final once it is committed. `rlcheck validate` compares the
+  decision log and the insights log with the last commit and fails if a
+  committed entry was changed. Before the commit you may still fix your own
+  draft.
 - A revised brief from the client goes into `store:sources/brief/` next to the
   original, under a new date. Open a new brief task for it, add it under
   *Amendments*, and log what it changes.
