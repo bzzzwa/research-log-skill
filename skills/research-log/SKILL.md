@@ -135,14 +135,18 @@ Never say a check passed unless you have seen its output in this session.
 **The project's version of rlcheck.** `tools/rlcheck.py` is the version the
 project's records are checked with; `rlcheck version`, `doctor` and `status`
 print it. Compare it with `__version__` in this skill's `scripts/rlcheck.py`.
-If the skill's is newer, tell the user and offer the update, but do not make
+If the skill's is newer, read `CHANGELOG.md` in this skill's directory for
+every version in between: what changed, and what each version requires in a
+project. Do not work it out by comparing the scripts. Tell the user and offer
+the update, but do not make
 it unasked: a new version can change what the project is held to and how
 digests are computed. Updating is a decision. Log it in `20-decisions.md` with
 `**Supersedes.**` naming the decision that set the previous version, so that
 the in-force view shows one version, not two. Replace the file with
 `rlcheck init --update-tool` run from the newer copy (in
 Claude.ai, handed over for download as described above), then run
-`rlcheck check` and reseal what `stale` reports.
+`rlcheck check`, reseal what `stale` reports, and do what `CHANGELOG.md` lists
+under *In a project* for each version passed.
 
 | Command | What it answers |
 |---|---|

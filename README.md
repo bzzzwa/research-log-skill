@@ -13,6 +13,8 @@ costs nothing and context is never silently lost to compaction.
 - `skills/research-log/` — the general skill: file classes, document set,
   task-record schema, closing gate, staleness handling, project setup.
   - `SKILL.md` — the skill itself
+  - `CHANGELOG.md` — what changed in each version, and what a project has to do
+    when it moves to that version
   - `reference/documents.md` — the methodology documents and their templates
   - `reference/task-records.md` — task record format and the dependency schema
   - `reference/retrievals.md` — snapshots of search and tool results
@@ -87,7 +89,8 @@ wait in the plan until the researcher makes them a task.
 or into the project's `.claude/skills/`. Start Claude Code in the research
 project's root; the model runs the checks itself.
 
-**Claude.ai.** Zip the `research-log` folder and upload it under
+**Claude.ai.** Download `research-log-<version>.zip` from the latest release
+(or zip the `research-log` folder yourself) and upload it under
 Settings → Skills (requires code execution enabled). Give the Filesystem
 connector access to the project folder and to the store, and nothing else the
 model does not need: the skill tells it to stay within the project, the store
@@ -117,8 +120,17 @@ conversation afterwards: a running session keeps the version it loaded.
 
 **A project's copy of the script.** Each project keeps the version of
 `tools/rlcheck.py` its records were checked with. A newer skill does not change
-it. When you want the project on the new version, ask the model: it logs the
-decision, has `init --update-tool` replace the copy, and runs the checks.
+it. When you want the project on the new version, ask the model: it reads
+`CHANGELOG.md` for every version in between, logs the decision, has
+`init --update-tool` replace the copy, runs the checks and does what the
+changelog lists for the project.
+
+## Releases
+
+Versions are numbered `YYYY.MM.N` and tagged `v<version>` in git. Each GitHub
+release carries the changelog entry as its notes and a ready-to-upload
+`research-log-<version>.zip` for Claude.ai. The version in `SKILL.md`, in
+`scripts/rlcheck.py` and at the top of `CHANGELOG.md` must be the same.
 
 ## Set up a research project
 
