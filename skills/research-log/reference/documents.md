@@ -114,7 +114,7 @@ plan does not count down to them or pace the work, unless the researcher asks.
 <things consciously postponed, and until when>
 
 ## Proposed
-<ideas for new work proposed by Claude or anyone else, one line each with why;
+<ideas for new work proposed by the assistant or anyone else, one line each with why;
 nothing here is worked on until the researcher makes it a task>
 ```
 
@@ -141,7 +141,7 @@ searching (saturation), or accept a known weakness rather than fix it.
 **Decision.** <what was decided>
 **Alternatives considered.** <and why not>
 **Consequences.** <what this affects downstream; which tasks depend on it>
-**Decided by.** <researcher / client / proposed by Claude, confirmed by the researcher / provisional>
+**Decided by.** <researcher / client / proposed by <the assistant>, confirmed by the researcher / provisional>
 **Supersedes.** <D003, or — if it replaces nothing>
 ```
 
@@ -150,7 +150,8 @@ confirm an earlier provisional decision. The confirmed decision stays in force
 and the in-force view marks it as confirmed; nothing has to be restated. Use
 `**Supersedes.**` only when the decision itself changes. A decision is
 provisional when its `**Decided by.**` contains the word "provisional", or says
-"proposed by Claude" without "confirmed"; `rlcheck status` lists those not yet
+"proposed by ..." (by Claude, Codex or another assistant) without "confirmed";
+`rlcheck status` lists those not yet
 confirmed.
 
 The header must keep the form `## D012 — YYYY-MM-DD — title`, and each field

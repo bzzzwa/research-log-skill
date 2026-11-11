@@ -1,0 +1,27 @@
+cff-version: 1.2.0
+message: "If you use this software in your research, please cite it as below."
+type: software
+title: "research-log: a skill for auditable, resumable desk research with AI assistants"
+abstract: >-
+  research-log is a skill for Claude that keeps the methodology documentation
+  of a social-science desk-research project complete and current, so that any
+  phase can be resumed in a new conversation and the whole project can be
+  audited afterwards. It comes with rlcheck, a dependency-free Python script
+  that checks task records, tracks the inputs of each task by digest, and
+  derives the decisions currently in force.
+authors:
+  - name: "TC Praha"
+version: "2026.11.11"
+date-released: "2026-11-11"
+repository-code: "https://github.com/bzzzwa/research-log-skill"
+url: "https://github.com/bzzzwa/research-log-skill"
+license: Apache-2.0
+keywords:
+  - research methodology
+  - desk research
+  - social science
+  - research documentation
+  - reproducibility
+  - audit trail
+  - AI assistants
+  - Claude

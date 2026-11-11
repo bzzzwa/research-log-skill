@@ -1,0 +1,11 @@
+# Metadata for OpenAI Codex and ChatGPT. Claude ignores this file.
+# Codex reads SKILL.md for the instructions; this file only sets how the skill
+# is shown and when it may be used without being named.
+interface:
+  display_name: "Research log"
+  short_description: "Keep a research project's methodology documentation complete, current and auditable"
+
+policy:
+  # Let Codex use the skill whenever the task matches its description, as
+  # Claude does; it can still be named explicitly with $research-log.
+  allow_implicit_invocation: true

@@ -12,6 +12,32 @@ lists under *In a project*, oldest first.
 
 ---
 
+## 2026.11.11
+
+The first public release.
+
+**Changed**
+- Licensed under the Apache License 2.0, copyright TC Praha. The skill folder
+  carries `LICENSE.txt`, and `scripts/rlcheck.py` an SPDX licence header, so
+  every copy of the skill or the script keeps its licence.
+- The manifest template for retrieval snapshots names no particular product
+  among its example tools.
+- The repository checks out text files with LF on every platform, so the
+  skill and the Claude.ai package no longer carry CRLF on Windows.
+- Experimental support for OpenAI Codex, not yet tested. The skill follows the
+  same open format; `agents/openai.yaml` sets its display name and lets Codex
+  use it implicitly. `SKILL.md` covers Codex where environments differ: making
+  the store writable, approving commits, and a line in `AGENTS.md` instead of a
+  session hook. `doctor` checks that line and reminds about the store in
+  projects used with Codex, and leaves out Claude Code notes there.
+- A decision "proposed by" any assistant (Claude, Codex, ...) without
+  "confirmed" counts as provisional. Messages from `rlcheck` speak of "the
+  assistant" rather than of Claude.
+
+**In a project**
+- Nothing is required. To use a project with Codex, add the store to Codex's
+  writable roots and the line to `AGENTS.md`; `doctor` shows both.
+
 ## 2026.11.10
 
 **Changed**
