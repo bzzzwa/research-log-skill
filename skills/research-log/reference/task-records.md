@@ -136,10 +136,17 @@ it is wrong on every other computer.
 
 - Inputs may come from the repository or from `store:sources/`, never from
   `store:inbox/`. A file in the inbox enters the record when a cataloguing task
-  moves it to `store:sources/` and lists it among its outputs.
+  takes it in: the researcher moves it to `store:sources/` with the command the
+  model prepared, the model checks its digest, and the task lists it among its
+  outputs.
 - Outputs are text in the task directory. The only outputs in the store are
   catalogued sources (`store:sources/`), large intermediates
-  (`store:work/<task id>/`) and final binary exports (`store:exports/`).
+  (`store:work/<task id>/`) and files for use outside the project
+  (`store:exports/<task id>/`).
+- When the task's product is a script, the script is an output in git and the
+  files it generates are outputs in the store, never in a git-ignored folder of
+  the repository. The data it reads are inputs, so `stale` shows when the files
+  need generating again.
 - Instructions a model followed for an analytic step (a prompt, a coding frame,
   an extraction template) and scripts the task ran are inputs too.
 
@@ -170,6 +177,12 @@ searched two, this section says two. The plan is not evidence of what happened;
 this record is. A discrepancy between plan and execution is normal and belongs
 in `methodology/20-decisions.md` as a decision, not hidden by rewriting either
 document.
+
+The same holds for an approved method. Steps done in another order than the
+method says, a step skipped or added, a rule changed or applied differently:
+each is written here when it happens, not reconstructed later. If rules for a
+judgement (a scale, criteria, a coding frame) were written down only after the
+judgements were made, this section says so.
 
 Exact queries do not need to be repeated here; point to the snapshot, whose
 manifest holds them verbatim.

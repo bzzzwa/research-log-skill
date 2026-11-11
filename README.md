@@ -49,7 +49,8 @@ treating a living document as a historical record, or the reverse.
 is versioned. Living and append-only documents must be in git, because git is
 their history, and derived work is kept as text and is in git too. Large
 sources such as 200-page PDFs, large intermediates such as text extracted from
-them, and final binary exports live in a shared store outside the repository.
+them, and files generated for use outside the project, such as charts drawn by
+a script, live in a shared store outside the repository.
 Records refer to them as `store:<path>` with a digest, so the record in git fixes
 which version was used even though the file is not in git.
 
@@ -108,7 +109,7 @@ wait in the plan until the researcher makes them a task.
   sources/                     catalogued sources, frozen
     brief/                     the client's original assignment
   work/                        large intermediates, one folder per task
-  exports/                     final binary exports
+  exports/                     files for use outside the project, one folder per task
 ```
 
 ## Install the skill
@@ -185,9 +186,9 @@ python tools/rlcheck.py doctor
 
 **Starting a session.** Ask Claude to continue the project. It reads the
 project's documents in a fixed order and starts from `rlcheck status`, which
-lists open tasks with the handoff of any task in progress, decisions awaiting
-your confirmation, and today's date. In Claude Code the session hook shows
-`status` automatically.
+lists open tasks with the handoff of any task in progress, tasks whose inputs
+have changed since they were sealed, decisions awaiting your confirmation, and
+today's date. In Claude Code the session hook shows `status` automatically.
 
 **Tasks.** Every unit of work is a task with its own record. Claude opens the
 record before the work and confirms the plan with you: screening criteria,
@@ -200,14 +201,24 @@ correct them, and `status` keeps listing what is still unconfirmed. Ideas for
 new work wait in the plan's *Proposed* section until you make them a task.
 Commit after a clean `check`.
 
-**New documents.** Put them into `inbox/` in the store. A cataloguing task moves
-them into `sources/` and records what was done with them.
+**New documents.** Put them into `inbox/` in the store. A cataloguing task takes
+them in: Claude prepares one command that moves them into `sources/` under
+their catalogued names, you run it, and Claude checks that each file arrived
+unchanged. Nothing enters the frozen corpus without a step taken by you.
 
 **When something changes.** If a source is added or corrected, or the brief is
-revised, `rlcheck stale` names the tasks that depend on it. For each, you decide
-whether to rerun it, accept its result as it stands, replace it, or extend it
-with a task for the new sources only. The decision is logged and the record
-keeps the trace.
+revised, the tasks that depend on it become stale. Nothing is redone
+automatically: `rlcheck status` reports them at the start of the next session,
+and `rlcheck check` before any task is closed or anything committed. For each,
+you decide whether to rerun it, accept its result as it stands, replace it, or
+extend it with a task for the new sources only. The decision is logged and the
+record keeps the trace.
+
+**Charts and other generated files.** When a task produces a script, for
+example R code that draws an infographic, the script is kept in git and the
+files it generates go to `exports/` in the store, so they are ready on every
+computer. If the data behind them change, the task is reported as stale like
+any other; when you decide to rerun it, Claude generates the files again.
 
 ## Commands
 
@@ -333,7 +344,11 @@ the result.
 
 ## Releases
 
-Versions are numbered `YYYY.MM.N` and tagged `v<version>` in git. The version in
-`SKILL.md`, in `scripts/rlcheck.py` and at the top of `CHANGELOG.md` must be the
-same. Each GitHub release has release notes and a ready-to-upload
-`research-log-<version>.zip` for Claude.ai.
+Versions are numbered `YYYY.MM.N` and tagged `v<version>` in git. Changes not
+yet released are collected under *Unreleased* at the top of `CHANGELOG.md`;
+the version number changes only when they are released. At a release, the
+*Unreleased* heading becomes the new version, and the version in `SKILL.md`, in
+`scripts/rlcheck.py` and in that heading must be the same. Do not install an
+unreleased working copy of the skill into projects: `doctor` compares version
+numbers, so it could not tell that the code differs. Each GitHub release has
+release notes and a ready-to-upload `research-log-<version>.zip` for Claude.ai.

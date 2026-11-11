@@ -46,7 +46,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-__version__ = "2026.11.9"
+__version__ = "2026.11.10"
 
 RECORD_NAME = "record.md"
 TASKS_DIR = "tasks"
@@ -1174,53 +1174,68 @@ def validate(root: Path) -> int:
     return 1 if rep.fails else 0
 
 
-def stale(root: Path) -> int:
-    records = find_records(root)
-    drifted = 0
-    unsealed = 0
+def scan_stale(root: Path):
+    """Compare every recorded input digest with the current one.
+
+    Returns (findings, unavailable, errors). Each finding is a dict with
+    'kind' (STALE, MISSING, UNSEALED or FAIL), 'record' (relative path),
+    'id', and for inputs 'input', 'recorded' and 'current'. Used by both
+    `stale` (in full) and `status` (as a summary), so they always agree.
+    """
+    findings = []
     unavailable = 0
     errors = 0
-
-    for path in records:
+    for path in find_records(root):
         rel = path.relative_to(root).as_posix()
         try:
             meta, _ = load_md(path)
         except ValueError as exc:
-            print(f"FAIL {rel}: {exc}")
-            drifted += 1
+            findings.append({"kind": "FAIL", "record": rel, "id": None, "message": str(exc)})
             continue
-
         if meta.get("status") == "superseded":
             continue
-
+        rid = meta.get("id")
         for item in meta.get("inputs") or []:
             if not isinstance(item, dict) or "path" not in item:
                 continue
             recorded = item.get("digest")
+            base = {"record": rel, "id": rid, "input": item["path"], "recorded": recorded}
             if not recorded:
-                print(f"UNSEALED {rel}: no digest recorded for {item['path']}")
-                unsealed += 1
+                findings.append(dict(base, kind="UNSEALED"))
                 continue
             current = digest(root, item["path"])
             if current == "unavailable":
                 unavailable += 1
-                continue
-            if current == "error":
-                if not errors:
-                    print(f"FAIL {STORE.reason}")
+            elif current == "error":
                 errors += 1
-                continue
-            if current == "missing":
-                print(f"MISSING {rel}")
-                print(f"       input:    {item['path']}")
-                print(f"       recorded: {recorded}")
-                drifted += 1
+            elif current == "missing":
+                findings.append(dict(base, kind="MISSING"))
             elif current != recorded:
-                print(f"STALE {rel}")
-                print(f"       input:    {item['path']}")
-                print(f"       recorded: {recorded}")
-                print(f"       current:  {current}")
-                drifted += 1
+                findings.append(dict(base, kind="STALE", current=current))
+    return findings, unavailable, errors
+
+
+def stale(root: Path) -> int:
+    records = find_records(root)
+    findings, unavailable, errors = scan_stale(root)
+    if errors:
+        print(f"FAIL {STORE.reason}")
+    drifted = 0
+    unsealed = 0
+    for f in findings:
+        if f["kind"] == "FAIL":
+            print(f"FAIL {f['record']}: {f['message']}")
+            drifted += 1
+        elif f["kind"] == "UNSEALED":
+            print(f"UNSEALED {f['record']}: no digest recorded for {f['input']}")
+            unsealed += 1
+        else:
+            print(f"{f['kind']} {f['record']}")
+            print(f"       input:    {f['input']}")
+            print(f"       recorded: {f['recorded']}")
+            if f["kind"] == "STALE":
+                print(f"       current:  {f['current']}")
+            drifted += 1
 
     print(f"\n{len(records)} record(s) checked, {drifted} stale or missing, {unsealed} unsealed input(s).")
     if unavailable:
@@ -1439,6 +1454,23 @@ def status(root: Path) -> int:
         print("  handoff:")
         for line in (handoff or "(empty)").splitlines():
             print(f"    {line}")
+
+    findings, unavailable, errors = scan_stale(root)
+    changed = sorted({f["id"] or f["record"] for f in findings if f["kind"] in ("STALE", "MISSING", "FAIL")})
+    unsealed = sorted({f["id"] or f["record"] for f in findings if f["kind"] == "UNSEALED"})
+    if changed:
+        print(f"STALE: {len(changed)} record(s) depend on inputs that changed or are missing: "
+              f"{', '.join(changed)}")
+        print("  Raise this with the researcher before other work: run 'rlcheck stale' for details,")
+        print("  then rerun, accept, supersede or extend each, after a logged decision.")
+    else:
+        print("stale: none")
+    if unsealed:
+        print(f"  unsealed inputs in: {', '.join(unsealed)}")
+    if unavailable:
+        print(f"  {unavailable} store input(s) not checked: {STORE.reason}")
+    if errors:
+        print(f"  store inputs not checked, store misconfigured: {STORE.reason}")
 
     text, entries = load_decisions(root)
     if entries:
