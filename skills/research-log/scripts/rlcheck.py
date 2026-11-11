@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 TC Praha
 """rlcheck - completeness and freshness checks for a research-log project.
 
 Deterministic bookkeeping that an LLM should never be asked to do by eye:
@@ -887,7 +889,7 @@ def check_snapshot(root: Path, snap: Path, rep: Report):
 
 
 RETRIEVAL_TEMPLATE = """---
-tool: <web search / Horizonary MCP / WoS web UI / CORDIS API / ...>
+tool: <web search / MCP connector / database web interface / API / ...>
 source: <database or site queried>
 retrieved: {now}
 results: <number of hits reported by the source, or n/a>

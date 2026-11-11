@@ -1,2 +1,4 @@
-# Auto detect text files and perform LF normalization
-* text=auto
+# Store text files with LF in the repository and check them out with LF on
+# every platform. The skill and its script are copied from this working tree
+# into projects and into the Claude.ai package, so they must not carry CRLF.
+* text=auto eol=lf

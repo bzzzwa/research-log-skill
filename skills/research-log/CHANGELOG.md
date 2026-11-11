@@ -12,6 +12,20 @@ lists under *In a project*, oldest first.
 
 ---
 
+## Unreleased
+
+**Changed**
+- Licensed under the Apache License 2.0, copyright TC Praha. The skill folder
+  carries `LICENSE.txt`, and `scripts/rlcheck.py` an SPDX licence header, so
+  every copy of the skill or the script keeps its licence.
+- The manifest template for retrieval snapshots names no particular product
+  among its example tools.
+- The repository checks out text files with LF on every platform, so the
+  skill and the Claude.ai package no longer carry CRLF on Windows.
+
+**In a project**
+- Nothing is required.
+
 ## 2026.11.10
 
 **Changed**

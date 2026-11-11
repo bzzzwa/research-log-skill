@@ -13,10 +13,22 @@ Claude.ai. It does not do research. It keeps the methodology documentation of a
 research project complete and current, so that any phase can be resumed in a new
 conversation, and so that the whole project can be audited afterwards.
 
+**Status.** An early version. It has been tested on several trial projects and
+one complete research project, in Claude Code and Claude.ai on Windows and
+Linux. Commands, file formats and rules may still change between versions;
+`CHANGELOG.md` in the skill lists every change and what a project has to do
+about it.
+
+This is an independent project by TC Praha. It is written for Claude, but it is
+not made, endorsed or supported by Anthropic.
+
 ## Contents
 
+- `LICENSE`, `NOTICE` — Apache License 2.0 and the copyright notice
+- `CITATION.cff` — how to cite the skill
 - `skills/research-log/` — the skill
   - `SKILL.md` — the instructions Claude follows
+  - `LICENSE.txt` — the licence, so that every copy of the skill carries it
   - `CHANGELOG.md` — what changed in each version, and what a project has to do
     when it moves to that version
   - `reference/documents.md` — the methodology documents and their templates
@@ -352,3 +364,13 @@ the version number changes only when they are released. At a release, the
 unreleased working copy of the skill into projects: `doctor` compares version
 numbers, so it could not tell that the code differs. Each GitHub release has
 release notes and a ready-to-upload `research-log-<version>.zip` for Claude.ai.
+
+## License and citation
+
+Copyright 2026 TC Praha. Licensed under the Apache License, Version 2.0; see
+`LICENSE` and `NOTICE`. You may use, change and share the skill, also in
+commercial work, as long as you keep the licence and copyright notices and say
+what you changed.
+
+If the skill contributes to published research, please cite it: GitHub shows
+the citation from `CITATION.cff` under *Cite this repository*.
