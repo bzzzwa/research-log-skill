@@ -28,7 +28,8 @@ its `**Last updated.**` is older than the plan's `**Updated.**`.
 - `tasks/` — one directory per completed unit of work
 - `sources/retrieved/` — dated snapshots of search and tool results
 - the store (`store:`, located per machine in `research-log.local.ini`) —
-  inbox, catalogued sources, large intermediates and final exports; see
+  inbox, catalogued sources, large intermediates and files for use outside
+  the project; see
   PROFILE.md for what is where
 - `tools/` — the project's copy of rlcheck and the scripts the analysis uses
 - `PROFILE.md` — source types and conventions specific to this project
