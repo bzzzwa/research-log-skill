@@ -59,6 +59,10 @@ staleness check.
 Markdown, nothing may be reworded, shortened or summarised. *Agreed scope* holds
 only what the user or the client has stated; leave it empty until they have.
 
+The date in the original's file name is the day the client delivered it, or, if
+that is not known, the day it was taken over. A date printed in the document
+is not the delivery date.
+
 ```markdown
 # Brief
 

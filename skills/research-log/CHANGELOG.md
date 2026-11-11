@@ -12,6 +12,20 @@ lists under *In a project*, oldest first.
 
 ---
 
+## Unreleased
+
+Collected here until the next version is released; the version number in
+`SKILL.md` and `scripts/rlcheck.py` changes only then.
+
+**Changed**
+- The date in the file name of the client's original brief is the day the
+  client delivered it, or, if that is not known, the day it was taken over
+  (from `rlcheck`). A date printed in the document is not the delivery date.
+
+**In a project**
+- Nothing is required. Originals already named by another date keep their
+  names: they are frozen.
+
 ## 2026.11.9
 
 **Changed**

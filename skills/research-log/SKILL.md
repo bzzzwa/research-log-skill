@@ -222,8 +222,11 @@ The parts, and what you need from the user for each:
    invent source types or task types. What you propose yourself is handled as
    described in *Decisions are logged wherever they are made*.
 5. **The brief.** Ask the user to put the client's original documents into
-   `store:sources/brief/`, with the date in the file name, and never move them
-   afterwards. Open the first task, `t0001-brief`, with those files as inputs
+   `store:sources/brief/`, with a date in the file name, and never move them
+   afterwards. The date is the day the client delivered the document; if that
+   is not known, the day it was taken over, from the `today:` line of
+   `rlcheck`. A date printed in the document itself is not the delivery date.
+   Open the first task, `t0001-brief`, with those files as inputs
    and `methodology/00-brief.md` as its output. Transcribe the assignment under
    *As received*, naming each original by its store path: formatting it as
    Markdown is fine, rewording it is not. Leave *Agreed scope* empty until the
