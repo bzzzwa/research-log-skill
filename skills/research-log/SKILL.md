@@ -5,7 +5,7 @@ description: Keep the methodology log and task records of a social-science desk-
 
 # Research Log
 
-**Version.** 2026.11.10 — the same number as `__version__` in
+**Version.** 2026.11.11 — the same number as `__version__` in
 `scripts/rlcheck.py`. If this skill is available to you more than once with
 different versions (for example in the project and in the user's account), tell
 the user which version you are following.
@@ -58,11 +58,14 @@ research-log project".
 
 First decide where your shell is.
 
-**Claude Code, or any shell that runs on the user's computer in the project**
-(the project files are in your working directory): run
+**Claude Code, Codex, or any shell that runs on the user's computer in the
+project** (the project files are in your working directory): run
 `python tools/rlcheck.py <command>` yourself — the project's own copy — and act
 on the output. Before `init` has created that copy, use this skill's
-`scripts/rlcheck.py`.
+`scripts/rlcheck.py`. In Codex, commands that write outside the project, such
+as `init --store`, need the store to be writable (see *Setting up a project*)
+or the user's approval; commits need approval too, because Codex keeps `.git`
+read-only.
 
 **Claude.ai, or any environment where your shell is a sandbox.** Claude.ai's
 code execution runs on a separate machine, not the user's. Working through a
@@ -127,8 +130,8 @@ wrong check. Hand it over as a file:
 
 `init` copies the script it was run from into `tools/rlcheck.py` and records
 its location; from then on every command uses `tools/rlcheck.py`, and the
-downloaded file can be deleted. In Claude Code, run `init` from this skill's
-`scripts/rlcheck.py` directly.
+downloaded file can be deleted. In Claude Code or Codex, run `init` from this
+skill's `scripts/rlcheck.py` directly.
 
 Never say a check passed unless you have seen its output in this session.
 
@@ -211,12 +214,18 @@ The parts, and what you need from the user for each:
    give the user exact commands in Claude.ai.
    If the folder already contains files but no store marker, `init` refuses;
    rerun with `--adopt` only after the user confirms it is the right folder.
-3. **Access for Claude.** In Claude Code, run `rlcheck claude-settings` after
-   the user agrees: it adds the store to Claude Code's allowed directories,
-   protects `sources/` in the store from edits, and installs the session hook.
-   Tell the user it takes effect in the next Claude Code session. In Claude.ai,
-   ask the user to give the Filesystem connector access to both the project
-   folder and the store.
+3. **Access for the assistant.** In Claude Code, run `rlcheck claude-settings`
+   after the user agrees: it adds the store to Claude Code's allowed
+   directories, protects `sources/` in the store from edits, and installs the
+   session hook. Tell the user it takes effect in the next Claude Code session.
+   In Codex, which has no such hook and writes only inside the project by
+   default, ask the user to make the store writable — start Codex with
+   `--add-dir "<store>"`, or add the store to `writable_roots` under
+   `[sandbox_workspace_write]` in `~/.codex/config.toml` — and, with the user's
+   agreement, add to `AGENTS.md` in the project root a line saying that every
+   session starts with `python tools/rlcheck.py status` and follows the
+   research-log skill. In Claude.ai, ask the user to give the Filesystem
+   connector access to both the project folder and the store.
 4. **PROFILE.md.** Write it with the user, following
    `reference/project-profile.md`. Ask about one section at a time; do not
    invent source types or task types. What you propose yourself is handled as
@@ -279,8 +288,9 @@ took it. Instead:
    mismatch is reported to the user, not fixed.
 4. List the moved files among the task's outputs and seal the task.
 
-In Claude Code, the permission rules from `claude-settings` and Claude Code's
-own safeguards may block such a move anyway; never work around a block.
+Permission rules and the environment's own safeguards — the rules from
+`claude-settings`, Claude Code's auto mode, Codex's sandbox — may block such a
+move anyway; never work around a block.
 
 **Store sources are frozen.** Git cannot protect them; the digests in task
 records can. If a store source has to change, treat it like any frozen file:
@@ -396,9 +406,10 @@ reasons survive: git keeps what changed, not why.
 - The choices made during setup — task types, conventions, what is in scope —
   are logged as they are confirmed, not after setup is finished.
 - `**Decided by.**` says who decided: the researcher, the client, or "proposed
-  by Claude, confirmed by the researcher". A choice you made alone, or one the
-  user has not yet confirmed, contains the word "provisional"; `rlcheck` also
-  treats "proposed by Claude" without "confirmed" as provisional.
+  by <you, e.g. Claude or Codex>, confirmed by the researcher". A choice you
+  made alone, or one the user has not yet confirmed, contains the word
+  "provisional"; `rlcheck` also treats "proposed by ..." without "confirmed"
+  as provisional.
 - When the user confirms a provisional decision, add a new entry with
   `**Confirms.** D00N`. Do not edit the old entry and do not supersede it: the
   decision has not changed, it has been confirmed, and the in-force view marks
@@ -427,8 +438,8 @@ but by what, and following which instructions.
 
 - Every complete record says who performed the work in `performed-by:`: the
   researcher, or the model with its name and version as you know them and the
-  environment (Claude Code, Claude.ai), and whether the researcher reviewed the
-  result. `validate` fails on a complete record without it.
+  environment (Claude Code, Claude.ai, Codex), and whether the researcher
+  reviewed the result. `validate` fails on a complete record without it.
 - Write only what you know. You know which model you are and where you run;
   you do not know what performed work in an earlier session. When you add
   `performed-by:` to a record closed before the field existed, take it from

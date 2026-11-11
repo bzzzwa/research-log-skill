@@ -48,7 +48,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-__version__ = "2026.11.10"
+__version__ = "2026.11.11"
 
 RECORD_NAME = "record.md"
 TASKS_DIR = "tasks"
@@ -626,8 +626,9 @@ def parse_decisions(text: str):
         e["supersedes"] = re.findall(r"D\d{3,}", e["fields"].get("supersedes", ""))
         e["confirms"] = re.findall(r"D\d{3,}", e["fields"].get("confirms", ""))
         by = e["fields"].get("decided by", "").lower()
-        # "proposed by Claude" without a confirmation is provisional too
-        e["provisional"] = "provisional" in by or ("proposed by claude" in by and "confirmed" not in by)
+        # a proposal by the assistant (Claude, Codex, ...) without a confirmation
+        # is provisional too
+        e["provisional"] = "provisional" in by or ("proposed by" in by and "confirmed" not in by)
     return entries
 
 
@@ -1625,6 +1626,10 @@ def _crlf_files(root: Path):
     return found
 
 
+def _uses_codex(root: Path) -> bool:
+    return (root / ".codex").is_dir() or (root / ".agents").is_dir() or (root / "AGENTS.md").is_file()
+
+
 def _uses_claude_code(root: Path) -> bool:
     claude = root / ".claude"
     return (claude / "settings.json").is_file() or (claude / "settings.local.json").is_file()
@@ -1654,8 +1659,8 @@ def _write_local(root: Path, vals):
     tools = sorted((k, v) for (sec, k), v in vals.items() if sec == "tools")
     if tools:
         lines += [
-            "# How to run rlcheck on this computer. Claude reads this to give you the",
-            "# exact command when it cannot run the script itself (e.g. in Claude.ai).",
+            "# How to run rlcheck on this computer. The assistant reads this to give you",
+            "# the exact command when it cannot run the script itself (e.g. in Claude.ai).",
             "[tools]",
         ] + [f"{k} = {v}" for k, v in tools] + [""]
     for sec in sorted({sec for sec, _ in vals} - {"store", "tools"}):
@@ -1876,7 +1881,7 @@ def doctor(root: Path) -> int:
         ok("PROFILE.md")
     else:
         fix("no PROFILE.md: the project layer is not written yet",
-            "write it together with Claude, following reference/project-profile.md")
+            "write it together with the assistant, following reference/project-profile.md")
     if not (root / "README.md").is_file():
         note("no README.md", "write the router from the template in reference/documents.md")
 
@@ -1913,7 +1918,7 @@ def doctor(root: Path) -> int:
     recorded = _read_local(root).get(("tools", "rlcheck"))
     here = _project_tool(root)
     if not recorded:
-        fix("where rlcheck is on this machine is not recorded, so Claude cannot give you"
+        fix("where rlcheck is on this machine is not recorded, so the assistant cannot give you"
             " commands when it cannot run them itself", f"{cmd} init")
     elif Path(recorded) == here:
         ok(f"rlcheck location recorded in {LOCAL_CONFIG}")
@@ -1943,10 +1948,12 @@ def doctor(root: Path) -> int:
         else:
             fix(STORE.reason, f'{cmd} init --store "<path to the store of {STORE.id}>"')
 
-    # Claude Code
+    # Claude Code (skipped in a project used only with Codex)
     access, hook, err = _claude_settings_state(root, STORE)
     report = fix if uses_claude_code else note
-    if err:
+    if not uses_claude_code and _uses_codex(root):
+        pass
+    elif err:
         report(err, f"repair or delete it, then {cmd} claude-settings")
     else:
         if STORE.state == "ok":
@@ -1958,7 +1965,22 @@ def doctor(root: Path) -> int:
             ok("Claude Code session hook shows status on start, resume and compaction")
         else:
             report("no Claude Code session hook", f"{cmd} claude-settings")
-    if not uses_claude_code:
+    # Codex
+    if _uses_codex(root):
+        agents = root / "AGENTS.md"
+        text = agents.read_text(encoding="utf-8") if agents.is_file() else ""
+        if "rlcheck" in text and "status" in text:
+            ok("AGENTS.md tells Codex to start each session with rlcheck status")
+        else:
+            note("Codex: AGENTS.md does not tell Codex to start each session with rlcheck status",
+                 "add a line to AGENTS.md: start every session with "
+                 "'python tools/rlcheck.py status' and follow the research-log skill")
+        if STORE.path:
+            note("Codex: make the store writable for Codex",
+                 f'start Codex with --add-dir "{STORE.path}", or add it to writable_roots '
+                 "under [sandbox_workspace_write] in ~/.codex/config.toml")
+
+    if not uses_claude_code and not _uses_codex(root):
         note("Claude.ai: give the Filesystem connector access to the project folder"
              + (f" and to {STORE.path}" if STORE.path else " and to the store"))
 

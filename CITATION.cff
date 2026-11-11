@@ -11,6 +11,10 @@ abstract: >-
   derives the decisions currently in force.
 authors:
   - name: "TC Praha"
+version: "2026.11.11"
+date-released: "2026-11-11"
+repository-code: "https://github.com/bzzzwa/research-log-skill"
+url: "https://github.com/bzzzwa/research-log-skill"
 license: Apache-2.0
 keywords:
   - research methodology

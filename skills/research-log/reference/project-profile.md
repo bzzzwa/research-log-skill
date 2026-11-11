@@ -103,3 +103,13 @@ Give the connector access to the store as well as to the project folder;
 otherwise the model can read the records but not the sources they point to.
 Scripts that download sources are run by you; in Claude Code the model can run
 them itself.
+
+## In Codex (experimental)
+
+Codex reads the same skill format. Put the skill in the project's
+`.agents/skills/` or in `~/.agents/skills/`. Codex runs `rlcheck` itself, like
+Claude Code, but by default writes only inside the project and keeps `.git`
+read-only: make the store writable with `--add-dir` or `writable_roots` in
+`~/.codex/config.toml`, and expect to approve commits. Codex has no session
+hook; a line in the project's `AGENTS.md` telling every session to start with
+`rlcheck status` takes its place. The skill has not yet been tested in Codex.
